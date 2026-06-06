@@ -1,4 +1,5 @@
 import json
+from dataclasses import asdict
 
 from . import tool_fallback_config
 from . import tool_fallback_state
@@ -7,6 +8,7 @@ from . import tool_fallback_state
 class ToolFallback:
     def __init__(self, config):
         self.printer = config.get_printer()
+        self.gcode = self.printer.lookup_object("gcode")
         self.global_config = tool_fallback_config.parse_global_config(config)
         self._config_error = config.error
         self._tools = {}
@@ -15,6 +17,9 @@ class ToolFallback:
         self._state_store = None
         self.printer.register_event_handler(
             "klippy:ready", self._handle_ready)
+        self.gcode.register_command(
+            "SHOW_TOOL_FALLBACK_STATE", self.cmd_SHOW_TOOL_FALLBACK_STATE,
+            desc="Show canonical tool fallback state")
 
     def register_tool(self, tool):
         if tool.name in self._tools:
@@ -32,6 +37,18 @@ class ToolFallback:
 
     def get_state(self):
         return self.state
+
+    def get_status(self, eventtime):
+        if self.state is None:
+            return {"initialized": False}
+        snapshot = self.state.to_dict()
+        snapshot["initialized"] = True
+        snapshot["configuration"] = asdict(self.config.global_config)
+        return snapshot
+
+    def cmd_SHOW_TOOL_FALLBACK_STATE(self, gcmd):
+        snapshot = self.get_status(None)
+        gcmd.respond_info(json.dumps(snapshot, indent=2, sort_keys=True))
 
     def _handle_ready(self):
         normalized = self.finalize_configuration()
