@@ -1,7 +1,7 @@
 ---
 phase: "01"
 slug: extension-foundation-and-persistence
-verified: 2026-06-06T07:37:46-04:00
+verified: 2026-06-06T07:46:34-04:00
 status: passed
 score: 10/10
 requirements_verified:
@@ -25,6 +25,10 @@ extension foundation, strict normalized configuration, schema-versioned canonica
 state, configuration reconciliation, failure-safe atomic JSON persistence, ready-time
 lifecycle integration, and deterministic read-only status surfaces.
 
+Post-review verification confirms that the strict-input boundary now rejects impossible
+purge state, non-finite timing values, and duplicate JSON keys, while the test harness
+preserves pytest's normal failure behavior when no tests are selected.
+
 The implementation also respects the phase boundary: command interception, sensor
 debounce, purge execution, and automatic fallback are not implemented prematurely.
 
@@ -33,10 +37,10 @@ debounce, purge execution, and automatic fallback are not implemented prematurel
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
 | 1 | Every managed physical tool is explicitly declared by a `[tool_fallback Tn]` section. | VERIFIED | `load_config_prefix()` parses and registers prefixed tool sections; canonical names and required sensor/heater values are enforced in `tool_fallback_config.py:73-90`. |
-| 2 | Invalid tool identities, backup references, and adapter configuration prevent startup. | VERIFIED | Configuration parsing/finalization rejects malformed names, duplicate tools/backups, self/unknown backups, empty adapters, and non-positive timing values; covered by `tests/test_tool_fallback_config.py`. |
+| 2 | Invalid tool identities, backup references, and adapter configuration prevent startup. | VERIFIED | Configuration parsing/finalization rejects malformed names, duplicate tools/backups, self/unknown backups, empty adapters, non-positive timing values, and every non-finite debounce/timeout value; covered by `tests/test_tool_fallback_config.py`. |
 | 3 | Core configuration logic is testable without a running Klipper process. | VERIFIED | Pure configuration module plus focused fakes exercise all configuration contracts in the passing test suite. |
 | 4 | Loaded, purged, failed, mappings, and ordered backups round-trip through schema version 1. | VERIFIED | `FallbackState.from_dict()` and `to_dict()` preserve every field and backup order in `tool_fallback_state.py:41-107`; round-trip tests pass. |
-| 5 | Malformed or unsupported persisted state never silently resets operator state. | VERIFIED | Strict schema/type/reference validation raises errors, and malformed/unsupported-file preservation tests pass. |
+| 5 | Malformed or unsupported persisted state never silently resets operator state. | VERIFIED | Strict schema/type/reference/invariant validation raises errors; impossible `loaded=false, purged=true` state, duplicate JSON keys at every nesting level, malformed JSON, and unsupported versions are rejected by passing regressions. |
 | 6 | State writes use same-directory temporary files, file fsync, atomic replacement, and parent-directory fsync. | VERIFIED | Atomic write sequence is implemented in `tool_fallback_state.py:169-192` and ordering/failure cleanup tests pass. |
 | 7 | Configured tool additions and removals reconcile to valid canonical state. | VERIFIED | `FallbackState.reconcile()` adds defaults, removes stale records/references, and resets stale targets in `tool_fallback_state.py:109-131`; reconciliation tests pass. |
 | 8 | The extension loads, validates, reconciles, and persists only after all configured tools are known. | VERIFIED | Exactly one `klippy:ready` handler finalizes configuration before state load/reconcile/save in `tool_fallback.py:18-19,53-67`; lifecycle tests pass. |
@@ -70,11 +74,22 @@ No orphaned Phase 01 requirements were found.
 
 | Command | Result |
 |---------|--------|
-| `pytest -q` | PASS: 65 passed |
+| `pytest -q` | PASS: 82 passed |
+| `pytest -q tests/test_tool_fallback_config.py tests/test_tool_fallback_state.py tests/test_tool_fallback_extension.py` | PASS: 82 passed |
+| `pytest -q -k __definitely_no_matching_tests__` | PASS: normal pytest failure, exit status 5 with 82 deselected |
 | `python3 -m py_compile klippy/extras/tool_fallback*.py` | PASS |
 | `git diff --check` | PASS |
 | Anti-pattern scan for `TBD`, `FIXME`, `XXX`, `TODO`, `HACK`, and placeholders | PASS: no product-code debt markers |
 | Later-phase behavior scan | PASS: no premature routing, sensor, purge, or fallback implementation |
+
+## Code Review Fix Regression Evidence
+
+| Review finding | Status | Current evidence |
+|----------------|--------|------------------|
+| Impossible `loaded=false, purged=true` state | RESOLVED | `FallbackState.from_dict()` rejects the invariant and `test_strict_parsing_rejects_purged_unloaded_tool` passes. |
+| Non-finite debounce/timeout values | RESOLVED | `_positive_finite_float()` rejects `nan`, `inf`, and `-inf`; parameterized coverage exercises every timing option. |
+| Duplicate JSON keys | RESOLVED | `StateStore.load()` uses `_reject_duplicate_keys`; regressions cover top-level, tool-name, tool-field, and mapping duplicates. |
+| Zero-test pytest runs reported success | RESOLVED | No session-finish exit-status override remains; empty selection exits with pytest status 5. |
 
 The `gsd-sdk verify.artifacts` and `verify.key-links` helpers could not parse the plans'
 string-form must-have entries, so artifact substance and wiring were verified manually
@@ -86,6 +101,9 @@ Verified controls:
 
 - Untrusted persisted JSON is strictly type-, field-, name-, and reference-validated
   before publication.
+- Cross-field state invariants and duplicate JSON object keys are rejected before
+  publication.
+- Debounce and timeout configuration must be positive and finite.
 - Invalid or unsupported state blocks startup instead of silently resetting state.
 - Atomic replacement preserves the prior file on pre-replace and replace failures.
 - Status renders only validated in-memory state and does not read arbitrary file content
