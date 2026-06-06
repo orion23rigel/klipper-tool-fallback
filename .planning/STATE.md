@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: in_progress
-last_updated: "2026-06-06T11:28:41Z"
+last_updated: "2026-06-06T11:34:09Z"
 progress:
   total_phases: 5
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
-  completed_plans: 2
-  percent: 67
+  completed_plans: 3
+  percent: 100
 ---
 
 # Project State
@@ -21,7 +21,7 @@ See: `.planning/PROJECT.md`
 **Core value:** A print can recover automatically from filament runout by selecting a
 known-loaded backup tool without losing track of routing, purge state, or safety.
 
-**Current focus:** Phase 01 — extension-foundation-and-persistence
+**Current focus:** Verify completed Phase 01 — extension-foundation-and-persistence
 
 ## Status
 
@@ -33,12 +33,14 @@ known-loaded backup tool without losing track of routing, purge state, or safety
   and 31 configuration contract tests.
 - Plan `01-02` completed: strict schema-v1 state, configuration reconciliation, atomic
   JSON persistence, and 25 focused state contract tests.
+- Plan `01-03` completed: ordered ready-time persistence, categorized startup errors,
+  deterministic read-only status, and 9 adapter integration tests.
 
 ## Plan Position
 
 - **Current phase:** 01 - Extension Foundation And Persistence
-- **Completed plans:** 2 of 3
-- **Next plan:** `01-03-PLAN.md` - Lifecycle Persistence And Status Surface
+- **Completed plans:** 3 of 3
+- **Phase status:** Complete, pending phase verification
 
 ## Decisions
 
@@ -50,6 +52,10 @@ known-loaded backup tool without losing track of routing, purge state, or safety
   newly added tools.
 - Atomic state writes use same-directory temporary files, fsync, replace, and supported
   parent-directory fsync.
+- Canonical state is published only after ready-time finalization, reconciliation, and
+  persistence all succeed.
+- Klipper status and `SHOW_TOOL_FALLBACK_STATE` render the same read-only snapshot.
+- State startup failures are categorized and include the configured state path.
 
 ## Performance Metrics
 
@@ -57,12 +63,13 @@ known-loaded backup tool without losing track of routing, purge state, or safety
 |------|----------|-------|-------|
 | 01-01 | 7 min | 3 | 5 |
 | 01-02 | 7 min | 3 | 2 |
+| 01-03 | 8 min | 3 | 3 |
 
 ## Next Action
 
-Execute `01-03-PLAN.md`, lifecycle persistence integration and read-only status surfaces.
+Verify Phase 1 completion before planning Phase 2 command routing and manual remapping.
 
 ## Session Continuity
 
-- **Stopped at:** Completed `01-02-PLAN.md`
+- **Stopped at:** Completed `01-03-PLAN.md`
 - **Resume file:** None

@@ -16,7 +16,7 @@ Covers: ROUTE-01, STATE-01, STATE-02, STATE-04, ADAPT-01
 - [x] `01-02-PLAN.md` - Versioned State And Atomic Persistence
 
 **Wave 3** *(blocked on Waves 1 and 2 completion)*
-- [ ] `01-03-PLAN.md` - Lifecycle Persistence And Status Surface
+- [x] `01-03-PLAN.md` - Lifecycle Persistence And Status Surface
 
 ## Phase 2: Command Routing And Manual Remapping
 
