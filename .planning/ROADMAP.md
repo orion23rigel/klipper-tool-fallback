@@ -10,7 +10,7 @@ Covers: ROUTE-01, STATE-01, STATE-02, STATE-04, ADAPT-01
 ### Plans
 
 **Wave 1**
-- [ ] `01-01-PLAN.md` - Configuration And Test Foundation
+- [x] `01-01-PLAN.md` - Configuration And Test Foundation
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] `01-02-PLAN.md` - Versioned State And Atomic Persistence

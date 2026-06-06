@@ -7,7 +7,7 @@
 
 ### Configuration And Routing
 
-- [ ] **ROUTE-01**: User can explicitly configure each managed physical tool with `[tool_fallback Tn]`.
+- [x] **ROUTE-01**: User can explicitly configure each managed physical tool with `[tool_fallback Tn]`.
 - [ ] **ROUTE-02**: Existing logical `Tn` commands are intercepted and routed through persistent mappings.
 - [ ] **ROUTE-03**: Original physical `Tn` handlers remain callable without routing recursion.
 - [ ] **ROUTE-04**: User can manually remap, restore, and reset logical tool mappings.
@@ -48,7 +48,7 @@
 
 ### Notifications And Adapters
 
-- [ ] **ADAPT-01**: Pause, resume, purge, and notification behavior is configurable without depending on a specific toolchanger.
+- [x] **ADAPT-01**: Pause, resume, purge, and notification behavior is configurable without depending on a specific toolchanger.
 - [ ] **ADAPT-02**: Success, failure, and transient recovery notifications contain meaningful event context.
 - [ ] **ADAPT-03**: Routine state changes do not send external notifications.
 
