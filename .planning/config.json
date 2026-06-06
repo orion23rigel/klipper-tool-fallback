@@ -3,7 +3,13 @@
   "granularity": "standard",
   "parallelization": true,
   "commit_docs": true,
+  "runtime": "codex",
   "model_profile": "balanced",
+  "model_overrides": {
+    "gsd-codebase-mapper": "gpt-5.4-mini",
+    "gsd-pattern-mapper": "gpt-5.4-mini",
+    "gsd-doc-classifier": "gpt-5.4-mini"
+  },
   "workflow": {
     "research": true,
     "plan_check": true,
