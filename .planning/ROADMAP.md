@@ -7,6 +7,17 @@ state schema/versioning, startup reconciliation interfaces, and status commands.
 
 Covers: ROUTE-01, STATE-01, STATE-02, STATE-04, ADAPT-01
 
+### Plans
+
+**Wave 1**
+- [ ] `01-01-PLAN.md` - Configuration And Test Foundation
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] `01-02-PLAN.md` - Versioned State And Atomic Persistence
+
+**Wave 3** *(blocked on Waves 1 and 2 completion)*
+- [ ] `01-03-PLAN.md` - Lifecycle Persistence And Status Surface
+
 ## Phase 2: Command Routing And Manual Remapping
 
 Capture and intercept configured `Tn` handlers, implement physical bypass selection,
