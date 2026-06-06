@@ -1,3 +1,7 @@
+import errno
+import json
+import os
+import tempfile
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -102,6 +106,91 @@ class FallbackState:
             "mappings": dict(self.mappings),
         }
 
+    def reconcile(self, configured_tools):
+        configured_names = set(configured_tools)
+        tool_states = {}
+        for name, config in configured_tools.items():
+            if name not in self.tools:
+                tool_states[name] = ToolState(
+                    False, False, False, tuple(config.backups))
+                continue
+            existing = self.tools[name]
+            tool_states[name] = ToolState(
+                existing.loaded,
+                existing.purged,
+                existing.failed,
+                tuple(
+                    backup for backup in existing.backups
+                    if backup in configured_names),
+            )
+
+        mappings = {}
+        for name in configured_tools:
+            target = self.mappings.get(name, name)
+            mappings[name] = target if target in configured_names else name
+        return self._canonical(tool_states, mappings)
+
+
+class StateStore:
+    def __init__(self, state_path):
+        self.path = os.path.abspath(os.path.expanduser(state_path))
+        self._persisted_state = None
+
+    def load(self):
+        try:
+            with open(self.path, "r", encoding="utf-8") as state_file:
+                decoded = json.load(state_file)
+        except FileNotFoundError:
+            self._persisted_state = None
+            return None
+        state = FallbackState.from_dict(decoded)
+        self._persisted_state = state
+        return state
+
+    def load_reconciled(self, configured_tools):
+        loaded = self.load()
+        if loaded is None:
+            return FallbackState.from_config(configured_tools)
+        return loaded.reconcile(configured_tools)
+
+    def save(self, state):
+        if state == self._persisted_state:
+            return False
+        serialized = json.dumps(
+            state.to_dict(),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ) + "\n"
+        self._atomic_write(serialized)
+        self._persisted_state = state
+        return True
+
+    def _atomic_write(self, serialized):
+        parent = os.path.dirname(self.path)
+        os.makedirs(parent, exist_ok=True)
+        descriptor = None
+        temporary_path = None
+        try:
+            descriptor, temporary_path = tempfile.mkstemp(
+                prefix=".tool_fallback_state.", suffix=".tmp", dir=parent)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as state_file:
+                descriptor = None
+                state_file.write(serialized)
+                state_file.flush()
+                os.fsync(state_file.fileno())
+            os.replace(temporary_path, self.path)
+            temporary_path = None
+            _fsync_directory(parent)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if temporary_path is not None:
+                try:
+                    os.unlink(temporary_path)
+                except FileNotFoundError:
+                    pass
+
 
 def _require_dict(value, description):
     if type(value) is not dict:
@@ -160,3 +249,21 @@ def _require_exact_references(mappings, tools, names):
 
 def _tool_sort_key(item):
     return int(item[0][1:])
+
+
+def _fsync_directory(path):
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    except OSError as error:
+        unsupported = {
+            errno.EBADF,
+            errno.EINVAL,
+            getattr(errno, "ENOTSUP", errno.EINVAL),
+            getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+        }
+        if error.errno not in unsupported:
+            raise
+    finally:
+        os.close(descriptor)
