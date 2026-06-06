@@ -1,3 +1,4 @@
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -50,23 +51,37 @@ def normalize_tool_name(config, name):
     return name
 
 
+def _positive_finite_float(config, option, default):
+    value = config.getfloat(option, default)
+    if not math.isfinite(value):
+        raise config.error(
+            "Option '%s' in section '%s' must be finite" %
+            (option, config.get_name()))
+    if value <= 0.0:
+        raise config.error(
+            "Option '%s' in section '%s' must be above 0.0" %
+            (option, config.get_name()))
+    return value
+
+
 def parse_global_config(config):
     state_path = _nonempty(
         config, "state_path",
         "~/printer_data/config/tool_fallback_state.json")
     return GlobalConfig(
         state_path=os.path.abspath(os.path.expanduser(state_path)),
-        debounce_time=config.getfloat("debounce_time", 1.0, above=0.0),
+        debounce_time=_positive_finite_float(config, "debounce_time", 1.0),
         pause_gcode=_nonempty(config, "pause_gcode", "PAUSE"),
         resume_gcode=_nonempty(config, "resume_gcode", "RESUME"),
         purge_gcode=_nonempty(config, "purge_gcode", "PURGE_TOOL"),
         notify_gcode=_nonempty(
             config, "notify_gcode", "_TOOL_FALLBACK_NOTIFY"),
-        selection_timeout=config.getfloat(
-            "selection_timeout", 120.0, above=0.0),
-        heating_timeout=config.getfloat(
-            "heating_timeout", 300.0, above=0.0),
-        purge_timeout=config.getfloat("purge_timeout", 180.0, above=0.0),
+        selection_timeout=_positive_finite_float(
+            config, "selection_timeout", 120.0),
+        heating_timeout=_positive_finite_float(
+            config, "heating_timeout", 300.0),
+        purge_timeout=_positive_finite_float(
+            config, "purge_timeout", 180.0),
     )
 
 

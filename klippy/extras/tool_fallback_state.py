@@ -63,12 +63,16 @@ class FallbackState:
             if len(set(backups)) != len(backups):
                 raise StateValidationError(
                     "Tool %s contains duplicate backup references" % (name,))
-            tool_states[name] = ToolState(
-                _require_bool(tool["loaded"], "tool %s loaded" % (name,)),
-                _require_bool(tool["purged"], "tool %s purged" % (name,)),
-                _require_bool(tool["failed"], "tool %s failed" % (name,)),
-                backups,
-            )
+            loaded = _require_bool(
+                tool["loaded"], "tool %s loaded" % (name,))
+            purged = _require_bool(
+                tool["purged"], "tool %s purged" % (name,))
+            failed = _require_bool(
+                tool["failed"], "tool %s failed" % (name,))
+            if purged and not loaded:
+                raise StateValidationError(
+                    "Tool %s cannot be purged while unloaded" % (name,))
+            tool_states[name] = ToolState(loaded, purged, failed, backups)
 
         raw_mappings = _require_dict(data["mappings"], "mappings")
         mappings = {}
@@ -139,7 +143,8 @@ class StateStore:
     def load(self):
         try:
             with open(self.path, "r", encoding="utf-8") as state_file:
-                decoded = json.load(state_file)
+                decoded = json.load(
+                    state_file, object_pairs_hook=_reject_duplicate_keys)
         except FileNotFoundError:
             self._persisted_state = None
             return None
@@ -195,6 +200,16 @@ class StateStore:
 def _require_dict(value, description):
     if type(value) is not dict:
         raise StateValidationError("%s must be an object" % (description,))
+    return value
+
+
+def _reject_duplicate_keys(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise StateValidationError(
+                "State JSON contains duplicate object key: %s" % (key,))
+        value[key] = item
     return value
 
 

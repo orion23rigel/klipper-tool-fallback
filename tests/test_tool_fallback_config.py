@@ -204,3 +204,16 @@ def test_nonpositive_timing_values_block_startup(
         option, value, config_factory, printer):
     with pytest.raises(ConfigError, match="must be above"):
         load_extension(config_factory, printer, **{option: value})
+
+
+@pytest.mark.parametrize("option", [
+    "debounce_time",
+    "selection_timeout",
+    "heating_timeout",
+    "purge_timeout",
+])
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_nonfinite_timing_values_block_startup(
+        option, value, config_factory, printer):
+    with pytest.raises(ConfigError, match="must be finite"):
+        load_extension(config_factory, printer, **{option: value})

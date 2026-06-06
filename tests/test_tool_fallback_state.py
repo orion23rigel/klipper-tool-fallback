@@ -158,6 +158,42 @@ def test_strict_parsing_rejects_invalid_state(mutate):
         FallbackState.from_dict(decoded)
 
 
+def test_strict_parsing_rejects_purged_unloaded_tool():
+    decoded = valid_dict()
+    decoded["tools"]["T0"].update(loaded=False, purged=True)
+
+    with pytest.raises(StateValidationError, match="purged while unloaded"):
+        FallbackState.from_dict(decoded)
+
+
+@pytest.mark.parametrize("duplicate_json", [
+    '{"version":1,"version":1,"tools":{},"mappings":{}}',
+    (
+        '{"version":1,"tools":{'
+        '"T0":{"loaded":false,"purged":false,"failed":false,"backups":[]},'
+        '"T0":{"loaded":false,"purged":false,"failed":false,"backups":[]}'
+        '},"mappings":{"T0":"T0"}}'
+    ),
+    (
+        '{"version":1,"tools":{"T0":{'
+        '"loaded":false,"loaded":true,"purged":false,"failed":false,'
+        '"backups":[]}},"mappings":{"T0":"T0"}}'
+    ),
+    (
+        '{"version":1,"tools":{"T0":{'
+        '"loaded":false,"purged":false,"failed":false,"backups":[]}},'
+        '"mappings":{"T0":"T0","T0":"T0"}}'
+    ),
+])
+def test_state_store_rejects_duplicate_json_keys_at_every_nesting_level(
+        duplicate_json, tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(duplicate_json, encoding="utf-8")
+
+    with pytest.raises(StateValidationError, match="duplicate object key"):
+        StateStore(str(path)).load()
+
+
 def test_malformed_json_does_not_replace_existing_file(tmp_path):
     path = tmp_path / "state.json"
     original = "{malformed json\n"
