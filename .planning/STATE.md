@@ -2,14 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: in_progress
-last_updated: "2026-06-06T11:34:09Z"
+current_phase: 01 - Extension Foundation And Persistence
+status: Phase 01 complete
+stopped_at: Completed `01-03-PLAN.md`
+last_updated: "2026-06-06T11:47:51.598Z"
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 3
   completed_plans: 3
-  percent: 100
+  percent: 20
 ---
 
 # Project State
@@ -21,7 +23,7 @@ See: `.planning/PROJECT.md`
 **Core value:** A print can recover automatically from filament runout by selecting a
 known-loaded backup tool without losing track of routing, purge state, or safety.
 
-**Current focus:** Verify completed Phase 01 — extension-foundation-and-persistence
+**Current focus:** Phase 2 preparation - Command Routing And Manual Remapping
 
 ## Status
 
@@ -35,12 +37,14 @@ known-loaded backup tool without losing track of routing, purge state, or safety
   JSON persistence, and 25 focused state contract tests.
 - Plan `01-03` completed: ordered ready-time persistence, categorized startup errors,
   deterministic read-only status, and 9 adapter integration tests.
+- Phase 1 code review findings resolved and covered by regression tests.
+- Phase 1 independently verified with 82 passing tests and no remaining gaps.
 
 ## Plan Position
 
 - **Current phase:** 01 - Extension Foundation And Persistence
 - **Completed plans:** 3 of 3
-- **Phase status:** Complete, pending phase verification
+- **Phase status:** Complete and verified
 
 ## Decisions
 
@@ -56,6 +60,9 @@ known-loaded backup tool without losing track of routing, purge state, or safety
   persistence all succeed.
 - Klipper status and `SHOW_TOOL_FALLBACK_STATE` render the same read-only snapshot.
 - State startup failures are categorized and include the configured state path.
+- Persisted state rejects impossible unloaded-and-purged combinations and duplicate JSON
+  object keys.
+- Debounce and timeout configuration rejects all non-finite values.
 
 ## Performance Metrics
 
@@ -67,7 +74,7 @@ known-loaded backup tool without losing track of routing, purge state, or safety
 
 ## Next Action
 
-Verify Phase 1 completion before planning Phase 2 command routing and manual remapping.
+Discuss or plan Phase 2 command routing and manual remapping.
 
 ## Session Continuity
 
