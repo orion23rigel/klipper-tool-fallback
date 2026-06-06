@@ -18,7 +18,10 @@ findings:
   warning: 2
   info: 0
   total: 4
-status: issues_found
+status: resolved
+resolution_status: resolved
+resolved: 2026-06-06T11:44:59Z
+resolution_commit: a0c3031
 ---
 
 # Phase 01: Code Review Report
@@ -99,6 +102,29 @@ the result of every pytest invocation.
 - `git diff --check`: passed
 - Reproduced acceptance of `loaded=false, purged=true`
 - Reproduced acceptance of `debounce_time: nan` and `debounce_time: inf`
+
+## Resolution
+
+All findings were resolved in product/test commit `a0c3031`.
+
+- **CR-01 resolved:** strict state parsing rejects `purged=true` when `loaded=false`;
+  a regression test covers the impossible persisted state.
+- **CR-02 resolved:** debounce and all timeout options reject `nan`, `inf`, and `-inf`;
+  parameterized regression tests cover every timing option and non-finite value.
+- **WR-01 resolved:** state-file JSON decoding rejects duplicate object keys at every
+  nesting level; regressions cover top-level fields, tool names, tool fields, and
+  mapping keys.
+- **WR-02 resolved:** the global pytest session-finish override was removed; an empty
+  test selection now returns pytest's normal exit status `5`.
+
+Resolution verification:
+
+- `pytest -q tests/test_tool_fallback_config.py tests/test_tool_fallback_state.py`:
+  passed, 73 tests
+- `pytest -q`: passed, 82 tests
+- `pytest -q -k __definitely_no_matching_tests__`: returned expected exit status `5`
+- `python3 -m py_compile klippy/extras/tool_fallback.py klippy/extras/tool_fallback_config.py klippy/extras/tool_fallback_state.py`: passed
+- `git diff --check`: passed
 
 ---
 
