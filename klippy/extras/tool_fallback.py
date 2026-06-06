@@ -1,4 +1,7 @@
+import json
+
 from . import tool_fallback_config
+from . import tool_fallback_state
 
 
 class ToolFallback:
@@ -8,6 +11,8 @@ class ToolFallback:
         self._config_error = config.error
         self._tools = {}
         self.config = None
+        self.state = None
+        self._state_store = None
         self.printer.register_event_handler(
             "klippy:ready", self._handle_ready)
 
@@ -22,8 +27,32 @@ class ToolFallback:
             self.global_config, self._tools, self._config_error)
         return self.config
 
+    def get_tool_config(self):
+        return None if self.config is None else self.config.tools
+
+    def get_state(self):
+        return self.state
+
     def _handle_ready(self):
-        self.finalize_configuration()
+        normalized = self.finalize_configuration()
+        state_path = normalized.global_config.state_path
+        store = tool_fallback_state.StateStore(state_path)
+        try:
+            state = store.load_reconciled(normalized.tools)
+            store.save(state)
+        except json.JSONDecodeError as error:
+            self._raise_state_error(state_path, "malformed JSON", error)
+        except tool_fallback_state.StateValidationError as error:
+            self._raise_state_error(state_path, "invalid state schema", error)
+        except OSError as error:
+            self._raise_state_error(state_path, "filesystem failure", error)
+        self._state_store = store
+        self.state = state
+
+    def _raise_state_error(self, state_path, category, error):
+        raise self._config_error(
+            "Unable to initialize tool fallback state at '%s' (%s): %s" %
+            (state_path, category, error))
 
 
 def load_config(config):
