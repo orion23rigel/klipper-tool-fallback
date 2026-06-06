@@ -15,8 +15,8 @@
 
 ### Persistent State
 
-- [ ] **STATE-01**: Structured state is persisted using atomic JSON writes.
-- [ ] **STATE-02**: Loaded, purged, failed, mappings, and ordered backups survive restarts.
+- [x] **STATE-01**: Structured state is persisted using atomic JSON writes.
+- [x] **STATE-02**: Loaded, purged, failed, mappings, and ordered backups survive restarts.
 - [ ] **STATE-03**: Startup reconciles persisted state with debounced sensor state.
 - [ ] **STATE-04**: User can inspect all fallback state through a G-code command.
 
@@ -82,4 +82,4 @@ Traceability will be populated when the roadmap is finalized.
 
 ---
 *Requirements defined: 2026-06-06*
-*Last updated: 2026-06-06 after initial definition*
+*Last updated: 2026-06-06 after Phase 1 Plan 02*
