@@ -85,8 +85,9 @@ validation, normalization, and configuration reconciliation.
 - Newly configured tool: add default flags, configured backups, and identity mapping.
 - Removed configured tool: remove its tool record, remove its logical mapping, reset any
   remaining mapping targeting it to identity, and remove it from backup lists.
-- Configuration backups initialize only a new tool or a missing backups field; they do
-  not overwrite an existing persisted backups list.
+- Configuration backups initialize only a newly configured tool record; they do not
+  overwrite an existing persisted backups list. Existing schema-v1 tool records must
+  contain every required field.
 - Mapping targets and backup entries must always reference currently configured tools.
 - Unknown or future schema version: fail startup with an actionable configuration error.
 - Malformed JSON, invalid types, or invalid invariants: fail startup with an actionable
@@ -186,4 +187,3 @@ pytest -q
 Nyquist coverage is defined by the required coverage and fast feedback commands above.
 Every plan task must include a narrow automated verification command, and final phase
 verification must run the complete pytest suite.
-
