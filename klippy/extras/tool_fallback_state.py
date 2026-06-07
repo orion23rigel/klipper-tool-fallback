@@ -134,6 +134,29 @@ class FallbackState:
             mappings[name] = target if target in configured_names else name
         return self._canonical(tool_states, mappings)
 
+    def with_mapping(self, logical, physical):
+        if logical not in self.tools:
+            raise StateValidationError(
+                "Logical route references unknown tool %s" % (logical,))
+        if physical not in self.tools:
+            raise StateValidationError(
+                "Physical route references unknown tool %s" % (physical,))
+        if self.mappings[logical] == physical:
+            return self
+        mappings = dict(self.mappings)
+        mappings[logical] = physical
+        return self._canonical(self.tools, mappings)
+
+    def with_identity_mapping(self, logical):
+        return self.with_mapping(logical, logical)
+
+    def with_identity_mappings(self):
+        if all(logical == physical
+               for logical, physical in self.mappings.items()):
+            return self
+        mappings = {name: name for name in self.tools}
+        return self._canonical(self.tools, mappings)
+
 
 class StateStore:
     def __init__(self, state_path):

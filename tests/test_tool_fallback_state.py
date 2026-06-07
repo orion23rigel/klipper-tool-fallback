@@ -136,6 +136,75 @@ def test_persisted_backup_order_takes_precedence_over_configuration():
     assert reconciled.tools["T0"].backups == ("T2", "T1")
 
 
+def test_with_mapping_returns_canonical_immutable_candidate():
+    state = FallbackState.from_dict(valid_dict())
+
+    candidate = state.with_mapping("T1", "T0")
+
+    assert candidate is not state
+    assert candidate.mappings == {"T0": "T2", "T1": "T0", "T2": "T2"}
+    assert list(candidate.mappings) == ["T0", "T1", "T2"]
+    assert candidate.tools == state.tools
+    assert candidate.tools is not state.tools
+    assert state.mappings == {"T0": "T2", "T1": "T1", "T2": "T2"}
+    with pytest.raises(TypeError):
+        candidate.mappings["T1"] = "T2"
+
+
+def test_with_identity_mapping_preserves_unrelated_state():
+    state = FallbackState.from_dict(valid_dict())
+
+    candidate = state.with_identity_mapping("T0")
+
+    assert candidate.mappings == {"T0": "T0", "T1": "T1", "T2": "T2"}
+    assert candidate.tools == state.tools
+    assert candidate.tools["T0"].backups == ("T2", "T1")
+    assert state.mappings["T0"] == "T2"
+
+
+def test_with_identity_mappings_resets_every_route_and_preserves_tools():
+    state = FallbackState.from_dict(valid_dict()).with_mapping("T1", "T0")
+
+    candidate = state.with_identity_mappings()
+
+    assert candidate.mappings == {"T0": "T0", "T1": "T1", "T2": "T2"}
+    assert candidate.tools == state.tools
+    assert list(candidate.tools) == ["T0", "T1", "T2"]
+
+
+def test_mapping_mutation_no_ops_return_existing_state():
+    identity = FallbackState.from_config(configured(
+        ("T0", ("T1",)), ("T1", ())))
+    mapped = FallbackState.from_dict(valid_dict())
+
+    assert mapped.with_mapping("T0", "T2") is mapped
+    assert mapped.with_identity_mapping("T1") is mapped
+    assert identity.with_identity_mappings() is identity
+
+
+@pytest.mark.parametrize(("logical", "physical", "message"), [
+    ("T9", "T0", "Logical route references unknown tool T9"),
+    ("t0", "T0", "Logical route references unknown tool t0"),
+    ("T0", "T9", "Physical route references unknown tool T9"),
+    ("T0", "t0", "Physical route references unknown tool t0"),
+])
+def test_with_mapping_rejects_unknown_route_endpoints(
+        logical, physical, message):
+    state = FallbackState.from_dict(valid_dict())
+
+    with pytest.raises(StateValidationError, match=message):
+        state.with_mapping(logical, physical)
+
+
+def test_with_identity_mapping_rejects_unknown_logical_route():
+    state = FallbackState.from_dict(valid_dict())
+
+    with pytest.raises(
+            StateValidationError,
+            match="Logical route references unknown tool T9"):
+        state.with_identity_mapping("T9")
+
+
 @pytest.mark.parametrize("mutate", [
     lambda value: value.update(version=2),
     lambda value: value.update(version=True),
