@@ -24,6 +24,7 @@ def load_extension(config_factory, prefix_config_factory, printer, state_path,
     extension = tool_fallback.load_config(config)
     printer.add_object("tool_fallback", extension)
     for name, backups in tools:
+        printer.gcode.register_command(name, lambda gcmd: None)
         options = tool_options(backups=", ".join(backups))
         tool_fallback.load_config_prefix(
             prefix_config_factory("tool_fallback %s" % name, **options))
@@ -61,6 +62,8 @@ def test_prefix_tools_may_load_before_global_and_finalize_only_at_ready(
     tool_fallback.load_config_prefix(prefix_config_factory(
         "tool_fallback T0", **tool_options(backups="T1")))
     extension = printer.lookup_object("tool_fallback")
+    printer.gcode.register_command("T0", lambda gcmd: None)
+    printer.gcode.register_command("T1", lambda gcmd: None)
 
     assert extension.config is None
     assert extension.state is None
