@@ -384,6 +384,229 @@ def test_persist_state_publishes_only_after_success(
     assert extension.state is original
 
 
+def test_remap_restore_and_reset_persist_requested_mappings(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    path = tmp_path / "state.json"
+    handlers = {
+        name: physical_handler_spy(name, [])
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, path, handlers=handlers)
+    printer.send_event("klippy:ready")
+
+    printer.gcode.invoke_command(
+        "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T2"}))
+    assert extension.state.mappings["T0"] == "T2"
+    assert state_module.StateStore(str(path)).load().mappings["T0"] == "T2"
+
+    printer.gcode.invoke_command("RESTORE_TOOL", FakeGCmd({"TOOL": "T0"}))
+    assert extension.state.mappings["T0"] == "T0"
+
+    printer.gcode.invoke_command(
+        "REMAP_TOOL", FakeGCmd({"LOGICAL": "T1", "PHYSICAL": "T2"}))
+    printer.gcode.invoke_command(
+        "REMAP_TOOL", FakeGCmd({"LOGICAL": "T2", "PHYSICAL": "T0"}))
+    printer.gcode.invoke_command("RESET_TOOL_MAPPINGS")
+
+    assert extension.state.mappings == {"T0": "T0", "T1": "T1", "T2": "T2"}
+    assert state_module.StateStore(str(path)).load() == extension.state
+
+
+@pytest.mark.parametrize(("command", "params"), [
+    ("REMAP_TOOL", {"LOGICAL": "T9", "PHYSICAL": "T0"}),
+    ("REMAP_TOOL", {"LOGICAL": "T0", "PHYSICAL": "t1"}),
+    ("RESTORE_TOOL", {"TOOL": "T00"}),
+])
+def test_remap_and_restore_reject_invalid_tools(
+        command, params, config_factory, prefix_config_factory, printer,
+        tmp_path):
+    handlers = {
+        name: physical_handler_spy(name, [])
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+    original = extension.state
+
+    with pytest.raises(CommandError, match="configured canonical tool"):
+        printer.gcode.invoke_command(command, FakeGCmd(params))
+
+    assert extension.state is original
+
+
+@pytest.mark.parametrize(("command", "params"), [
+    ("REMAP_TOOL", {"LOGICAL": "T0", "PHYSICAL": "T0"}),
+    ("RESTORE_TOOL", {"TOOL": "T0"}),
+    ("RESET_TOOL_MAPPINGS", {}),
+])
+def test_remap_restore_and_reset_no_ops_do_not_save_or_select(
+        command, params, config_factory, prefix_config_factory, printer,
+        tmp_path, monkeypatch):
+    events = []
+    handlers = {
+        name: physical_handler_spy(name, events)
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+
+    def reject_save(candidate):
+        raise AssertionError("no-op command attempted a state-store write")
+
+    monkeypatch.setattr(extension._state_store, "save", reject_save)
+
+    printer.gcode.invoke_command(command, FakeGCmd(params))
+
+    assert events == []
+
+
+@pytest.mark.parametrize(("command", "params"), [
+    ("REMAP_TOOL", {"LOGICAL": "T0", "PHYSICAL": "T2"}),
+    ("RESTORE_TOOL", {"TOOL": "T0"}),
+    ("RESET_TOOL_MAPPINGS", {}),
+])
+def test_remap_restore_and_reset_save_failures_preserve_published_state(
+        command, params, config_factory, prefix_config_factory, printer,
+        tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    if command != "REMAP_TOOL":
+        persist_mapping(path, "T2")
+    handlers = {
+        name: physical_handler_spy(name, [])
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, path, handlers=handlers)
+    printer.send_event("klippy:ready")
+    original = extension.state
+
+    def fail_save(candidate):
+        raise OSError("injected mapping save failure")
+
+    monkeypatch.setattr(extension._state_store, "save", fail_save)
+
+    with pytest.raises(CommandError, match="mapping save failure"):
+        printer.gcode.invoke_command(command, FakeGCmd(params))
+
+    assert extension.state is original
+
+
+@pytest.mark.parametrize("print_state", ["printing", "paused"])
+@pytest.mark.parametrize(("command", "params"), [
+    ("REMAP_TOOL", {"LOGICAL": "T0", "PHYSICAL": "T2"}),
+    ("RESTORE_TOOL", {"TOOL": "T0"}),
+    ("RESET_TOOL_MAPPINGS", {}),
+])
+def test_changed_active_route_commands_fail_closed_during_active_jobs(
+        command, params, print_state, config_factory, prefix_config_factory,
+        printer, tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    if command != "REMAP_TOOL":
+        persist_mapping(path, "T2")
+    events = []
+    handlers = {
+        name: physical_handler_spy(name, events)
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, path, handlers=handlers)
+    printer.send_event("klippy:ready")
+    printer.gcode.invoke_command("T0")
+    events.clear()
+    printer.add_object("print_stats", FakePrintStats(print_state))
+    original = extension.state
+
+    def reject_save(candidate):
+        raise AssertionError("active-route rejection attempted persistence")
+
+    monkeypatch.setattr(extension._state_store, "save", reject_save)
+
+    with pytest.raises(CommandError, match="transitions are not yet available"):
+        printer.gcode.invoke_command(command, FakeGCmd(params))
+
+    assert events == []
+    assert extension.state is original
+
+
+def test_inactive_route_change_persists_during_active_print(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    events = []
+    handlers = {
+        name: physical_handler_spy(name, events)
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+    printer.gcode.invoke_command("T0")
+    events.clear()
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    printer.gcode.invoke_command(
+        "REMAP_TOOL", FakeGCmd({"LOGICAL": "T1", "PHYSICAL": "T2"}))
+
+    assert extension.state.mappings["T1"] == "T2"
+    assert extension.state.mappings["T0"] == "T0"
+    assert events == []
+
+
+def test_active_route_exact_no_op_remains_no_op_during_paused_print(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    handlers = {
+        name: physical_handler_spy(name, [])
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+    printer.gcode.invoke_command("T0")
+    printer.add_object("print_stats", FakePrintStats("paused"))
+
+    def reject_save(candidate):
+        raise AssertionError("active-route no-op attempted persistence")
+
+    monkeypatch.setattr(extension._state_store, "save", reject_save)
+
+    printer.gcode.invoke_command(
+        "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T0"}))
+
+
+def test_successful_remap_survives_extension_restart(tmp_path):
+    path = tmp_path / "state.json"
+    first_printer = FakePrinter()
+    first_handlers = {
+        name: physical_handler_spy(name, [])
+        for name in ("T0", "T1", "T2")
+    }
+    first = load_extension(
+        lambda **options: FakeConfig(first_printer, options=options),
+        lambda name, **options: FakePrefixConfig(first_printer, name, options),
+        first_printer, path, handlers=first_handlers)
+    first_printer.send_event("klippy:ready")
+    first_printer.gcode.invoke_command(
+        "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T2"}))
+
+    second_printer = FakePrinter()
+    second_handlers = {
+        name: physical_handler_spy(name, [])
+        for name in ("T0", "T1", "T2")
+    }
+    second = load_extension(
+        lambda **options: FakeConfig(second_printer, options=options),
+        lambda name, **options: FakePrefixConfig(second_printer, name, options),
+        second_printer, path, handlers=second_handlers)
+    second_printer.send_event("klippy:ready")
+
+    assert second.state.mappings["T0"] == "T2"
+
+
 def test_status_reports_transient_ownership_and_restart_forgets_it(tmp_path):
     path = tmp_path / "state.json"
     first_printer = FakePrinter()

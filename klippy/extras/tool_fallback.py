@@ -28,6 +28,15 @@ class ToolFallback:
         self.gcode.register_command(
             "SELECT_PHYSICAL_TOOL", self.cmd_SELECT_PHYSICAL_TOOL,
             desc="Select a physical tool without changing logical mappings")
+        self.gcode.register_command(
+            "REMAP_TOOL", self.cmd_REMAP_TOOL,
+            desc="Map a logical tool to a physical tool")
+        self.gcode.register_command(
+            "RESTORE_TOOL", self.cmd_RESTORE_TOOL,
+            desc="Restore one logical tool to its identity mapping")
+        self.gcode.register_command(
+            "RESET_TOOL_MAPPINGS", self.cmd_RESET_TOOL_MAPPINGS,
+            desc="Restore all logical tools to identity mappings")
 
     def register_tool(self, tool):
         if tool.name in self._tools:
@@ -68,6 +77,23 @@ class ToolFallback:
                 "SELECT_PHYSICAL_TOOL is unavailable while a print is "
                 "printing or paused")
         self._select_physical(physical_tool)
+
+    def cmd_REMAP_TOOL(self, gcmd):
+        logical_tool = self._require_configured_tool(gcmd, "LOGICAL")
+        physical_tool = self._require_configured_tool(gcmd, "PHYSICAL")
+        candidate = self.state.with_mapping(logical_tool, physical_tool)
+        self._apply_mapping_candidate(gcmd, candidate)
+
+    def cmd_RESTORE_TOOL(self, gcmd):
+        logical_tool = self._require_configured_tool(gcmd, "TOOL")
+        candidate = self.state.with_identity_mapping(logical_tool)
+        self._apply_mapping_candidate(gcmd, candidate)
+
+    def cmd_RESET_TOOL_MAPPINGS(self, gcmd):
+        if self.state is None or self._physical_handlers is None:
+            raise gcmd.error("Tool fallback routing is not initialized")
+        candidate = self.state.with_identity_mappings()
+        self._apply_mapping_candidate(gcmd, candidate)
 
     def _handle_ready(self):
         normalized = self.finalize_configuration()
@@ -140,6 +166,22 @@ class ToolFallback:
     def _persist_state(self, candidate):
         self._state_store.save(candidate)
         self.state = candidate
+
+    def _apply_mapping_candidate(self, gcmd, candidate):
+        if candidate is self.state:
+            return
+        if (self._print_is_active() and self._active_logical_tool is not None
+                and candidate.mappings[self._active_logical_tool]
+                != self.state.mappings[self._active_logical_tool]):
+            raise gcmd.error(
+                "Active-route transitions are not yet available; cannot "
+                "change active logical route %s while a print is printing "
+                "or paused" % (self._active_logical_tool,))
+        try:
+            self._persist_state(candidate)
+        except OSError as error:
+            raise gcmd.error(
+                "Unable to persist tool fallback mappings: %s" % (error,))
 
     def _require_configured_tool(self, gcmd, parameter):
         if self.config is None or self._physical_handlers is None:
