@@ -173,15 +173,56 @@ class ToolFallback:
         if (self._print_is_active() and self._active_logical_tool is not None
                 and candidate.mappings[self._active_logical_tool]
                 != self.state.mappings[self._active_logical_tool]):
-            raise gcmd.error(
-                "Active-route transitions are not yet available; cannot "
-                "change active logical route %s while a print is printing "
-                "or paused" % (self._active_logical_tool,))
+            self._transition_active_route(gcmd, candidate)
+            return
         try:
             self._persist_state(candidate)
         except OSError as error:
             raise gcmd.error(
                 "Unable to persist tool fallback mappings: %s" % (error,))
+
+    def _transition_active_route(self, gcmd, candidate):
+        if self._transition_active:
+            raise gcmd.error("Another tool fallback transition is active")
+        logical_tool = self._active_logical_tool
+        current_physical = self._selected_physical_tool
+        if current_physical is None:
+            raise gcmd.error(
+                "Cannot transition active logical route %s because the "
+                "selected physical tool is unknown" % (logical_tool,))
+        requested_physical = candidate.mappings[logical_tool]
+        print_state = self._get_print_state()
+        owns_pause = False
+        self._transition_active = True
+        try:
+            if print_state == "printing":
+                self.gcode.run_script_from_command(
+                    self.config.global_config.pause_gcode)
+                owns_pause = True
+            gcmd.respond_info(
+                "Changing active logical %s from physical %s to physical %s" %
+                (logical_tool, current_physical, requested_physical))
+            self._run_pre_selection_transition_stages(
+                logical_tool, current_physical, requested_physical)
+            self._select_physical(requested_physical)
+            self._run_post_selection_transition_stages(
+                logical_tool, current_physical, requested_physical)
+            self._persist_state(candidate)
+            if owns_pause:
+                self.gcode.run_script_from_command(
+                    self.config.global_config.resume_gcode)
+        finally:
+            self._transition_active = False
+
+    def _run_pre_selection_transition_stages(
+            self, logical_tool, current_physical, requested_physical):
+        # Phase 4 integrates temperature-transfer stages here.
+        pass
+
+    def _run_post_selection_transition_stages(
+            self, logical_tool, current_physical, requested_physical):
+        # Phase 3 integrates conditional purge here.
+        pass
 
     def _require_configured_tool(self, gcmd, parameter):
         if self.config is None or self._physical_handlers is None:
@@ -194,12 +235,14 @@ class ToolFallback:
         return name
 
     def _print_is_active(self):
+        return self._get_print_state() in ("printing", "paused")
+
+    def _get_print_state(self):
         print_stats = self.printer.lookup_object("print_stats", None)
         if print_stats is None:
-            return False
+            return None
         eventtime = self.printer.get_reactor().monotonic()
-        return print_stats.get_status(eventtime).get("state") in (
-            "printing", "paused")
+        return print_stats.get_status(eventtime).get("state")
 
     def _restore_physical_handlers(self, handlers):
         for name, handler in handlers.items():

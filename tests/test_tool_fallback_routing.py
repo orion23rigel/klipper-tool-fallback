@@ -49,6 +49,27 @@ def physical_handler_spy(name, events, failure=None):
     return handler
 
 
+def transition_gcmd(params, events):
+    gcmd = FakeGCmd(params)
+
+    def respond_info(message):
+        events.append("warning:%s" % (message,))
+        gcmd.responses.append(message)
+
+    gcmd.respond_info = respond_info
+    return gcmd
+
+
+def record_transition_scripts(printer, events):
+    original = printer.gcode.run_script_from_command
+
+    def run_script(script):
+        events.append("script:%s" % (script,))
+        return original(script)
+
+    printer.gcode.run_script_from_command = run_script
+
+
 def persist_mapping(path, physical_tool):
     state = state_module.FallbackState.from_dict({
         "version": 1,
@@ -533,21 +554,21 @@ def test_remap_restore_and_reset_save_failures_preserve_published_state(
     assert extension.state is original
 
 
-@pytest.mark.parametrize("print_state", ["printing", "paused"])
 @pytest.mark.parametrize(("command", "params"), [
     ("REMAP_TOOL", {"LOGICAL": "T0", "PHYSICAL": "T2"}),
     ("RESTORE_TOOL", {"TOOL": "T0"}),
     ("RESET_TOOL_MAPPINGS", {}),
 ])
-def test_changed_active_route_commands_fail_closed_during_active_jobs(
-        command, params, print_state, config_factory, prefix_config_factory,
-        printer, tmp_path, monkeypatch):
+def test_changed_active_route_commands_use_ordered_transition_during_print(
+        command, params, config_factory, prefix_config_factory, printer,
+        tmp_path, monkeypatch):
     path = tmp_path / "state.json"
     if command != "REMAP_TOOL":
         persist_mapping(path, "T2")
     events = []
     handlers = {
-        name: physical_handler_spy(name, events)
+        name: (lambda selected: lambda gcmd: events.append(
+            "select:%s" % (selected,)))(name)
         for name in ("T0", "T1", "T2")
     }
     extension = load_extension(
@@ -555,19 +576,102 @@ def test_changed_active_route_commands_fail_closed_during_active_jobs(
     printer.send_event("klippy:ready")
     printer.gcode.invoke_command("T0")
     events.clear()
-    printer.add_object("print_stats", FakePrintStats(print_state))
-    original = extension.state
+    printer.add_object("print_stats", FakePrintStats("printing"))
+    record_transition_scripts(printer, events)
+    original_save = extension._state_store.save
 
-    def reject_save(candidate):
-        raise AssertionError("active-route rejection attempted persistence")
+    def record_save(candidate):
+        events.append("persist")
+        return original_save(candidate)
 
-    monkeypatch.setattr(extension._state_store, "save", reject_save)
+    monkeypatch.setattr(extension._state_store, "save", record_save)
 
-    with pytest.raises(CommandError, match="transitions are not yet available"):
-        printer.gcode.invoke_command(command, FakeGCmd(params))
+    printer.gcode.invoke_command(command, transition_gcmd(params, events))
+
+    assert events[0] == "script:PAUSE"
+    assert events[1].startswith("warning:Changing active logical T0")
+    assert events[2:] == ["select:T0" if command != "REMAP_TOOL"
+                         else "select:T2", "persist", "script:RESUME"]
+    assert extension._transition_active is False
+
+
+def test_already_paused_active_transition_does_not_pause_or_resume(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    events = []
+    handlers = {
+        name: (lambda selected: lambda gcmd: events.append(
+            "select:%s" % (selected,)))(name)
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+    printer.gcode.invoke_command("T0")
+    events.clear()
+    printer.add_object("print_stats", FakePrintStats("paused"))
+    record_transition_scripts(printer, events)
+
+    printer.gcode.invoke_command(
+        "REMAP_TOOL",
+        transition_gcmd({"LOGICAL": "T0", "PHYSICAL": "T2"}, events))
+
+    assert events[0].startswith("warning:Changing active logical T0")
+    assert events[1:] == ["select:T2"]
+    assert printer.gcode.script_events == []
+
+
+def test_active_transition_rejects_unknown_selected_physical_ownership(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    events = []
+    handlers = {
+        name: physical_handler_spy(name, events)
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+    extension._active_logical_tool = "T0"
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    with pytest.raises(CommandError, match="selected physical tool is unknown"):
+        printer.gcode.invoke_command(
+            "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T2"}))
 
     assert events == []
-    assert extension.state is original
+    assert printer.gcode.script_events == []
+
+
+def test_reentrant_active_transition_is_rejected_before_selection(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    events = []
+    handlers = {
+        name: physical_handler_spy(name, events)
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+    printer.gcode.invoke_command("T0")
+    events.clear()
+    printer.add_object("print_stats", FakePrintStats("printing"))
+    original_pause = printer.gcode.run_script_from_command
+
+    def reenter_during_pause(script):
+        original_pause(script)
+        printer.gcode.invoke_command(
+            "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T1"}))
+
+    printer.gcode.run_script_from_command = reenter_during_pause
+
+    with pytest.raises(CommandError, match="transition is active"):
+        printer.gcode.invoke_command(
+            "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T2"}))
+
+    assert events == []
+    assert extension._transition_active is False
 
 
 def test_inactive_route_change_persists_during_active_print(
