@@ -104,6 +104,43 @@ def test_registered_physical_handler_can_inject_failure(printer):
         printer.gcode.invoke_command("T2")
 
 
+def test_print_state_fake_distinguishes_printing_paused_and_inactive(printer):
+    print_stats = FakePrintStats()
+    printer.add_object("print_stats", print_stats)
+
+    assert print_stats.get_status(0.0)["state"] == "standby"
+    print_stats.set_state("printing")
+    assert print_stats.get_status(1.0)["state"] == "printing"
+    print_stats.set_state("paused")
+    assert print_stats.get_status(2.0)["state"] == "paused"
+
+
+def test_pause_and_resume_scripts_record_order_and_update_print_state(printer):
+    print_stats = FakePrintStats("printing")
+    printer.add_object("print_stats", print_stats)
+
+    printer.gcode.run_script_from_command("PAUSE")
+    printer.gcode.run_script_from_command("RESUME")
+
+    assert printer.gcode.script_events == ["PAUSE", "RESUME"]
+    assert print_stats.state == "printing"
+
+
+@pytest.mark.parametrize("script", ["PAUSE", "RESUME"])
+def test_pause_and_resume_script_failures_are_independently_injectable(
+        script, printer):
+    print_stats = FakePrintStats("printing")
+    printer.add_object("print_stats", print_stats)
+    error = CommandError("injected %s failure" % (script.lower(),))
+    printer.gcode.inject_script_failure(script, error)
+
+    with pytest.raises(CommandError, match="injected"):
+        printer.gcode.run_script_from_command(script)
+
+    assert printer.gcode.script_events == [script]
+    assert print_stats.state == "printing"
+
+
 @pytest.mark.parametrize("missing", ["T0", "T2"])
 def test_missing_handler_blocks_startup_and_restores_originals(
         missing, config_factory, prefix_config_factory, printer, tmp_path):

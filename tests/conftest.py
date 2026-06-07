@@ -22,6 +22,9 @@ class FakePrintStats:
         self.state = state
         self.eventtimes = []
 
+    def set_state(self, state):
+        self.state = state
+
     def get_status(self, eventtime):
         self.eventtimes.append(eventtime)
         return {"state": self.state}
@@ -31,6 +34,9 @@ class FakeGCode:
     def __init__(self):
         self.commands = {}
         self.responses = []
+        self.script_events = []
+        self.script_failures = {}
+        self.printer = None
 
     def register_command(self, name, handler, desc=None):
         previous = self.commands.get(name)
@@ -49,6 +55,21 @@ class FakeGCode:
         command = gcmd or self.create_gcode_command(name, name, {})
         return self.commands[name](command)
 
+    def inject_script_failure(self, script, error):
+        self.script_failures[script] = error
+
+    def run_script_from_command(self, script):
+        self.script_events.append(script)
+        error = self.script_failures.get(script)
+        if error is not None:
+            raise error
+        print_stats = self.printer.lookup_object("print_stats", None)
+        if print_stats is not None:
+            if script == "PAUSE":
+                print_stats.set_state("paused")
+            elif script == "RESUME":
+                print_stats.set_state("printing")
+
     def respond_info(self, message):
         self.responses.append(message)
 
@@ -57,6 +78,7 @@ class FakePrinter:
     def __init__(self):
         self.reactor = FakeReactor()
         self.gcode = FakeGCode()
+        self.gcode.printer = self
         self.objects = {"gcode": self.gcode}
         self.object_loaders = {}
         self.events = {}
