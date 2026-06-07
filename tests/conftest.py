@@ -30,6 +30,15 @@ class FakeGCode:
             self.commands[name] = handler
         return previous
 
+    def create_gcode_command(self, command, commandline, params):
+        return FakeGCmd(
+            params=params, command=command, commandline=commandline,
+            rawparams="")
+
+    def invoke_command(self, name, gcmd=None):
+        command = gcmd or self.create_gcode_command(name, name, {})
+        return self.commands[name](command)
+
     def respond_info(self, message):
         self.responses.append(message)
 
@@ -133,12 +142,25 @@ class FakePrefixConfig(FakeConfig):
 
 
 class FakeGCmd:
-    def __init__(self, params=None):
+    def __init__(self, params=None, command=None, commandline=None,
+                 rawparams=""):
         self.params = dict(params or {})
+        self.command = command
+        self.commandline = commandline
+        self.rawparams = rawparams
         self.responses = []
 
     def error(self, message):
         return CommandError(message)
+
+    def get_command(self):
+        return self.command
+
+    def get_commandline(self):
+        return self.commandline
+
+    def get_raw_command_parameters(self):
+        return self.rawparams
 
     def get(self, name, default=...):
         if name in self.params:
