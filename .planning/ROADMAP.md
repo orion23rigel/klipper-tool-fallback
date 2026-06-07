@@ -24,7 +24,11 @@ Capture and intercept configured `Tn` handlers, implement physical bypass select
 persistent mappings, manual remap/restore/reset commands, and active-print transition
 ownership.
 
-Covers: ROUTE-02, ROUTE-03, ROUTE-04, ROUTE-05
+Covers: ROUTE-02, ROUTE-03, ROUTE-04
+
+Contributes partial ROUTE-05 coverage: transition ownership and routing safety only.
+ROUTE-05 remains incomplete pending Phase 3 conditional-purge integration and Phase 4
+temperature-transfer/stage execution.
 
 ## Phase 3: Sensor State And Purge Lifecycle
 
@@ -33,6 +37,8 @@ semantics, dedicated purge workflow, and active-print purge checks.
 
 Covers: STATE-03, SENS-01 through SENS-04, PURGE-01 through PURGE-05
 
+Also provides the conditional-purge integration required to complete ROUTE-05.
+
 ## Phase 4: Automatic Fallback Workflow
 
 Implement immediate-pause ownership, transient recovery, recursive ordered backup
@@ -40,6 +46,9 @@ resolution, temperature transfer, failed-heater shutdown, stage timeouts, condit
 purge, persistent remapping, safe resume, and recoverable failures.
 
 Covers: FALL-01 through FALL-08
+
+Also provides the temperature-transfer and stage-execution integration required to
+complete ROUTE-05.
 
 ## Phase 5: Notifications, Integration, And Verification
 
