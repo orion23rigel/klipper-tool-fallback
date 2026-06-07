@@ -207,7 +207,20 @@ class ToolFallback:
             self._select_physical(requested_physical)
             self._run_post_selection_transition_stages(
                 logical_tool, current_physical, requested_physical)
-            self._persist_state(candidate)
+            try:
+                self._persist_state(candidate)
+            except OSError as persist_error:
+                try:
+                    self._select_physical(current_physical)
+                except Exception as rollback_error:
+                    raise gcmd.error(
+                        "Unable to persist tool fallback mappings: %s; "
+                        "physical rollback to %s also failed: %s" %
+                        (persist_error, current_physical, rollback_error))
+                raise gcmd.error(
+                    "Unable to persist tool fallback mappings: %s; physical "
+                    "selection rolled back to %s" %
+                    (persist_error, current_physical))
             if owns_pause:
                 self.gcode.run_script_from_command(
                     self.config.global_config.resume_gcode)

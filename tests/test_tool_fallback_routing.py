@@ -719,6 +719,215 @@ def test_active_route_exact_no_op_remains_no_op_during_paused_print(
         "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T0"}))
 
 
+def test_active_transition_pause_failure_prevents_warning_selection_and_save(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    events = []
+    handlers = {
+        name: physical_handler_spy(name, events)
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+    printer.gcode.invoke_command("T0")
+    events.clear()
+    original = extension.state
+    printer.add_object("print_stats", FakePrintStats("printing"))
+    printer.gcode.inject_script_failure(
+        "PAUSE", CommandError("injected pause failure"))
+
+    def reject_save(candidate):
+        raise AssertionError("pause failure attempted persistence")
+
+    monkeypatch.setattr(extension._state_store, "save", reject_save)
+    gcmd = FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T2"})
+
+    with pytest.raises(CommandError, match="pause failure"):
+        printer.gcode.invoke_command("REMAP_TOOL", gcmd)
+
+    assert gcmd.responses == []
+    assert events == []
+    assert extension.state is original
+    assert extension._transition_active is False
+    assert printer.gcode.script_events == ["PAUSE"]
+
+
+def test_active_transition_selection_failure_preserves_state_and_stays_paused(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    events = []
+    handlers = {
+        "T0": physical_handler_spy("T0", events),
+        "T1": physical_handler_spy("T1", events),
+        "T2": physical_handler_spy(
+            "T2", events, CommandError("injected selection failure")),
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+    printer.gcode.invoke_command("T0")
+    events.clear()
+    original = extension.state
+    print_stats = FakePrintStats("printing")
+    printer.add_object("print_stats", print_stats)
+
+    def reject_save(candidate):
+        raise AssertionError("selection failure attempted persistence")
+
+    monkeypatch.setattr(extension._state_store, "save", reject_save)
+
+    with pytest.raises(CommandError, match="selection failure"):
+        printer.gcode.invoke_command(
+            "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T2"}))
+
+    assert [event["handler"] for event in events] == ["T2"]
+    assert extension.state is original
+    assert extension._selected_physical_tool == "T0"
+    assert extension._transition_active is False
+    assert print_stats.state == "paused"
+    assert printer.gcode.script_events == ["PAUSE"]
+
+
+def test_active_transition_persistence_failure_rolls_back_and_stays_paused(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    events = []
+    handlers = {
+        name: physical_handler_spy(name, events)
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+    printer.gcode.invoke_command("T0")
+    events.clear()
+    original = extension.state
+    print_stats = FakePrintStats("printing")
+    printer.add_object("print_stats", print_stats)
+
+    def fail_save(candidate):
+        raise OSError("injected transition save failure")
+
+    monkeypatch.setattr(extension._state_store, "save", fail_save)
+
+    with pytest.raises(CommandError, match="rolled back to T0"):
+        printer.gcode.invoke_command(
+            "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T2"}))
+
+    assert [event["handler"] for event in events] == ["T2", "T0"]
+    assert extension.state is original
+    assert extension._selected_physical_tool == "T0"
+    assert extension._transition_active is False
+    assert print_stats.state == "paused"
+    assert printer.gcode.script_events == ["PAUSE"]
+
+
+def test_active_transition_rollback_failure_reports_both_causes(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    events = []
+    t0_calls = [0]
+
+    def t0_handler(gcmd):
+        t0_calls[0] += 1
+        events.append("T0")
+        if t0_calls[0] > 1:
+            raise CommandError("injected rollback failure")
+
+    handlers = {
+        "T0": t0_handler,
+        "T1": lambda gcmd: events.append("T1"),
+        "T2": lambda gcmd: events.append("T2"),
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+    printer.gcode.invoke_command("T0")
+    events.clear()
+    original = extension.state
+    print_stats = FakePrintStats("printing")
+    printer.add_object("print_stats", print_stats)
+
+    def fail_save(candidate):
+        raise OSError("injected transition save failure")
+
+    monkeypatch.setattr(extension._state_store, "save", fail_save)
+
+    with pytest.raises(CommandError) as raised:
+        printer.gcode.invoke_command(
+            "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T2"}))
+
+    assert "transition save failure" in str(raised.value)
+    assert "rollback failure" in str(raised.value)
+    assert events == ["T2", "T0"]
+    assert extension.state is original
+    assert extension._transition_active is False
+    assert print_stats.state == "paused"
+    assert printer.gcode.script_events == ["PAUSE"]
+
+
+def test_active_transition_resume_failure_surfaces_and_stays_paused(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    handlers = {
+        name: physical_handler_spy(name, [])
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+    printer.gcode.invoke_command("T0")
+    print_stats = FakePrintStats("printing")
+    printer.add_object("print_stats", print_stats)
+    printer.gcode.inject_script_failure(
+        "RESUME", CommandError("injected resume failure"))
+
+    with pytest.raises(CommandError, match="resume failure"):
+        printer.gcode.invoke_command(
+            "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T2"}))
+
+    assert extension.state.mappings["T0"] == "T2"
+    assert extension._selected_physical_tool == "T2"
+    assert extension._transition_active is False
+    assert print_stats.state == "paused"
+    assert printer.gcode.script_events == ["PAUSE", "RESUME"]
+
+
+def test_active_reset_failure_preserves_all_prior_mappings_atomically(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    persist_mapping(path, "T2")
+    handlers = {
+        name: physical_handler_spy(name, [])
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, path, handlers=handlers)
+    printer.send_event("klippy:ready")
+    printer.gcode.invoke_command(
+        "REMAP_TOOL", FakeGCmd({"LOGICAL": "T1", "PHYSICAL": "T2"}))
+    printer.gcode.invoke_command("T0")
+    original = extension.state
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    def fail_save(candidate):
+        raise OSError("injected active reset save failure")
+
+    monkeypatch.setattr(extension._state_store, "save", fail_save)
+
+    with pytest.raises(CommandError, match="active reset save failure"):
+        printer.gcode.invoke_command("RESET_TOOL_MAPPINGS")
+
+    assert extension.state is original
+    assert dict(extension.state.mappings) == {
+        "T0": "T2", "T1": "T2", "T2": "T2",
+    }
+    assert extension._selected_physical_tool == "T2"
+    assert extension._transition_active is False
+    assert printer.gcode.script_events == ["PAUSE"]
+
+
 def test_successful_remap_survives_extension_restart(tmp_path):
     path = tmp_path / "state.json"
     first_printer = FakePrinter()
