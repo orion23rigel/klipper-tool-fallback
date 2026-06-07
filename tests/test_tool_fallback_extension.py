@@ -193,5 +193,8 @@ def test_status_interfaces_are_deterministic_complete_and_read_only(
     assert expected["tools"] == extension.get_state().to_dict()["tools"]
     assert expected["mappings"] == extension.get_state().to_dict()["mappings"]
     assert expected["configuration"]["purge_gcode"] == "PURGE_TOOL"
+    assert expected["active_logical_tool"] is None
+    assert expected["selected_physical_tool"] is None
+    assert expected["transition_active"] is False
     assert post_ready.responses == [
         json.dumps(expected, indent=2, sort_keys=True)]

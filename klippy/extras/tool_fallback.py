@@ -49,6 +49,9 @@ class ToolFallback:
         snapshot = self.state.to_dict()
         snapshot["initialized"] = True
         snapshot["configuration"] = asdict(self.config.global_config)
+        snapshot["active_logical_tool"] = self._active_logical_tool
+        snapshot["selected_physical_tool"] = self._selected_physical_tool
+        snapshot["transition_active"] = self._transition_active
         return snapshot
 
     def cmd_SHOW_TOOL_FALLBACK_STATE(self, gcmd):
@@ -104,6 +107,24 @@ class ToolFallback:
         def handler(gcmd):
             return self._route_logical(logical_tool, gcmd)
         return handler
+
+    def _route_logical(self, logical_tool, gcmd):
+        if self.state is None or self._physical_handlers is None:
+            raise gcmd.error("Tool fallback routing is not initialized")
+        if self._transition_active:
+            raise gcmd.error(
+                "Cannot select logical tool %s during an active transition" %
+                (logical_tool,))
+        physical_tool = self.state.mappings[logical_tool]
+        self._select_physical(physical_tool)
+        self._active_logical_tool = logical_tool
+
+    def _select_physical(self, physical_tool):
+        handler = self._physical_handlers[physical_tool]
+        physical_gcmd = self.gcode.create_gcode_command(
+            physical_tool, physical_tool, {})
+        handler(physical_gcmd)
+        self._selected_physical_tool = physical_tool
 
     def _restore_physical_handlers(self, handlers):
         for name, handler in handlers.items():

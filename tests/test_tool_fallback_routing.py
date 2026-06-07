@@ -1,6 +1,7 @@
 import pytest
 
-from conftest import CommandError, ConfigError
+from conftest import (CommandError, ConfigError, FakeConfig, FakeGCmd,
+                      FakePrefixConfig, FakePrinter)
 from klippy.extras import tool_fallback
 from klippy.extras import tool_fallback_state as state_module
 
@@ -46,6 +47,27 @@ def physical_handler_spy(name, events, failure=None):
             raise failure
 
     return handler
+
+
+def persist_mapping(path, physical_tool):
+    state = state_module.FallbackState.from_dict({
+        "version": 1,
+        "tools": {
+            name: {
+                "loaded": False,
+                "purged": False,
+                "failed": False,
+                "backups": [],
+            }
+            for name in ("T0", "T1", "T2")
+        },
+        "mappings": {
+            "T0": physical_tool,
+            "T1": "T1",
+            "T2": "T2",
+        },
+    })
+    state_module.StateStore(str(path)).save(state)
 
 
 def test_synthetic_physical_command_exposes_clean_identity(printer):
@@ -171,3 +193,130 @@ def test_later_ready_failure_restores_all_original_handlers(
     assert extension.state is None
     assert extension._state_store is None
     assert extension._physical_handlers is None
+
+
+def test_logical_route_invokes_saved_physical_handler_without_recursion(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    path = tmp_path / "state.json"
+    persist_mapping(path, "T2")
+    events = []
+    handlers = {
+        name: physical_handler_spy(name, events)
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, path, handlers=handlers)
+    printer.send_event("klippy:ready")
+
+    printer.gcode.invoke_command("T0")
+
+    assert events == [{
+        "handler": "T2",
+        "command": "T2",
+        "commandline": "T2",
+        "rawparams": "",
+        "params": {},
+    }]
+    assert extension._active_logical_tool == "T0"
+    assert extension._selected_physical_tool == "T2"
+
+
+def test_physical_handler_failure_preserves_previous_ownership(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    path = tmp_path / "state.json"
+    persist_mapping(path, "T2")
+    events = []
+    failure = CommandError("injected physical handler failure")
+    handlers = {
+        "T0": physical_handler_spy("T0", events),
+        "T1": physical_handler_spy("T1", events),
+        "T2": physical_handler_spy("T2", events, failure=failure),
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, path, handlers=handlers)
+    printer.send_event("klippy:ready")
+    printer.gcode.invoke_command("T1")
+
+    with pytest.raises(CommandError, match="physical handler failure"):
+        printer.gcode.invoke_command("T0")
+
+    assert extension._active_logical_tool == "T1"
+    assert extension._selected_physical_tool == "T1"
+
+
+def test_logical_selection_does_not_write_state(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    events = []
+    handlers = {
+        name: physical_handler_spy(name, events)
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+
+    def reject_write(*args, **kwargs):
+        raise AssertionError("logical selection attempted to persist state")
+
+    monkeypatch.setattr(extension._state_store, "save", reject_write)
+
+    printer.gcode.invoke_command("T0")
+
+    assert extension._active_logical_tool == "T0"
+    assert extension._selected_physical_tool == "T0"
+
+
+def test_logical_selection_rejects_pre_ready_and_active_transition(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    handlers = {
+        name: physical_handler_spy(name, [])
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+
+    with pytest.raises(CommandError, match="not initialized"):
+        extension._route_logical("T0", FakeGCmd())
+
+    printer.send_event("klippy:ready")
+    extension._transition_active = True
+
+    with pytest.raises(CommandError, match="active transition"):
+        printer.gcode.invoke_command("T0")
+
+
+def test_status_reports_transient_ownership_and_restart_forgets_it(tmp_path):
+    path = tmp_path / "state.json"
+    first_printer = FakePrinter()
+    first_handlers = {
+        name: physical_handler_spy(name, [])
+        for name in ("T0", "T1", "T2")
+    }
+    first = load_extension(
+        lambda **options: FakeConfig(first_printer, options=options),
+        lambda name, **options: FakePrefixConfig(
+            first_printer, name, options),
+        first_printer, path, handlers=first_handlers)
+    first_printer.send_event("klippy:ready")
+    first_printer.gcode.invoke_command("T0")
+
+    assert first.get_status(None)["active_logical_tool"] == "T0"
+    assert first.get_status(None)["selected_physical_tool"] == "T0"
+
+    second_printer = FakePrinter()
+    second_handlers = {
+        name: physical_handler_spy(name, [])
+        for name in ("T0", "T1", "T2")
+    }
+    second = load_extension(
+        lambda **options: FakeConfig(second_printer, options=options),
+        lambda name, **options: FakePrefixConfig(
+            second_printer, name, options),
+        second_printer, path, handlers=second_handlers)
+    second_printer.send_event("klippy:ready")
+
+    assert second.get_status(None)["active_logical_tool"] is None
+    assert second.get_status(None)["selected_physical_tool"] is None
+    assert second.get_status(None)["transition_active"] is False
