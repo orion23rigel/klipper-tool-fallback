@@ -17,6 +17,16 @@ class FakeReactor:
         return self.monotonic_time
 
 
+class FakePrintStats:
+    def __init__(self, state="standby"):
+        self.state = state
+        self.eventtimes = []
+
+    def get_status(self, eventtime):
+        self.eventtimes.append(eventtime)
+        return {"state": self.state}
+
+
 class FakeGCode:
     def __init__(self):
         self.commands = {}

@@ -25,6 +25,9 @@ class ToolFallback:
         self.gcode.register_command(
             "SHOW_TOOL_FALLBACK_STATE", self.cmd_SHOW_TOOL_FALLBACK_STATE,
             desc="Show canonical tool fallback state")
+        self.gcode.register_command(
+            "SELECT_PHYSICAL_TOOL", self.cmd_SELECT_PHYSICAL_TOOL,
+            desc="Select a physical tool without changing logical mappings")
 
     def register_tool(self, tool):
         if tool.name in self._tools:
@@ -57,6 +60,14 @@ class ToolFallback:
     def cmd_SHOW_TOOL_FALLBACK_STATE(self, gcmd):
         snapshot = self.get_status(None)
         gcmd.respond_info(json.dumps(snapshot, indent=2, sort_keys=True))
+
+    def cmd_SELECT_PHYSICAL_TOOL(self, gcmd):
+        physical_tool = self._require_configured_tool(gcmd, "TOOL")
+        if self._print_is_active():
+            raise gcmd.error(
+                "SELECT_PHYSICAL_TOOL is unavailable while a print is "
+                "printing or paused")
+        self._select_physical(physical_tool)
 
     def _handle_ready(self):
         normalized = self.finalize_configuration()
@@ -125,6 +136,28 @@ class ToolFallback:
             physical_tool, physical_tool, {})
         handler(physical_gcmd)
         self._selected_physical_tool = physical_tool
+
+    def _persist_state(self, candidate):
+        self._state_store.save(candidate)
+        self.state = candidate
+
+    def _require_configured_tool(self, gcmd, parameter):
+        if self.config is None or self._physical_handlers is None:
+            raise gcmd.error("Tool fallback routing is not initialized")
+        name = gcmd.get(parameter)
+        if name not in self.config.tools:
+            raise gcmd.error(
+                "%s must name a configured canonical tool; got %s" %
+                (parameter, name))
+        return name
+
+    def _print_is_active(self):
+        print_stats = self.printer.lookup_object("print_stats", None)
+        if print_stats is None:
+            return False
+        eventtime = self.printer.get_reactor().monotonic()
+        return print_stats.get_status(eventtime).get("state") in (
+            "printing", "paused")
 
     def _restore_physical_handlers(self, handlers):
         for name, handler in handlers.items():
