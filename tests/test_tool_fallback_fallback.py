@@ -1,7 +1,9 @@
 import pytest
 
-from conftest import CommandError, FakeFilamentSensor, FakeGCmd, FakePrintStats
+from conftest import (CommandError, FakeFilamentSensor, FakeGCmd, FakePrintStats,
+                      FakeSnapshotSequence)
 from klippy.extras import tool_fallback
+from klippy.extras.tool_fallback import resolve_backup_graph
 from klippy.extras.tool_fallback_state import FallbackState, StateStore
 
 
@@ -54,6 +56,14 @@ def begin_runout(printer, extension, sensor, pause_owned="1"):
         "TOOL_FALLBACK_RUNOUT",
         FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": pause_owned}),
     )
+
+
+def fallback_state(tool_states):
+    return FallbackState.from_dict({
+        "version": 1,
+        "tools": tool_states,
+        "mappings": {name: name for name in tool_states},
+    })
 
 
 def test_PAUSE_OWNED_parsing_is_strict(
@@ -171,3 +181,109 @@ def test_conflicting_runout_does_not_replace_active_pending_workflow(
     assert extension._workflow_checkpoint is original
     assert any("another tool fallback workflow is active" in response
                for response in printer.gcode.responses)
+
+
+def test_resolver_uses_depth_first_priority_and_traverses_failed_intermediary():
+    state = fallback_state({
+        "T0": tool_state(loaded=False, purged=False, failed=True,
+                         backups=("T1", "T3")),
+        "T1": tool_state(loaded=True, failed=True, backups=("T2",)),
+        "T2": tool_state(),
+        "T3": tool_state(),
+    })
+
+    result = resolve_backup_graph(state, "T0")
+
+    assert result.candidate == "T2"
+    assert result.evaluated == ("T1", "T2")
+    assert result.failed == ("T1",)
+
+
+def test_resolver_traverses_unloaded_intermediary_and_suppresses_duplicates():
+    state = fallback_state({
+        "T0": tool_state(loaded=False, purged=False, failed=True,
+                         backups=("T1", "T2")),
+        "T1": tool_state(loaded=False, purged=False, backups=("T2",)),
+        "T2": tool_state(loaded=False, purged=False, backups=("T3",)),
+        "T3": tool_state(),
+    })
+
+    result = resolve_backup_graph(state, "T0")
+
+    assert result.candidate == "T3"
+    assert result.evaluated == ("T1", "T2", "T3")
+    assert result.unloaded == ("T1", "T2")
+
+
+def test_resolver_contains_path_local_loop_and_continues_unrelated_branch():
+    state = fallback_state({
+        "T0": tool_state(loaded=False, purged=False, failed=True,
+                         backups=("T1", "T3")),
+        "T1": tool_state(loaded=False, purged=False, backups=("T2",)),
+        "T2": tool_state(loaded=False, purged=False, backups=("T1",)),
+        "T3": tool_state(),
+    })
+
+    result = resolve_backup_graph(state, "T0")
+
+    assert result.candidate == "T3"
+    assert result.evaluated == ("T1", "T2", "T3")
+    assert result.looped == ("T0->T1->T2->T1",)
+
+
+def test_resolver_uses_persisted_eligibility_despite_unknown_authority():
+    state = fallback_state({
+        "T0": tool_state(loaded=False, purged=False, failed=True,
+                         backups=("T1",)),
+        "T1": tool_state(),
+    })
+
+    result = resolve_backup_graph(state, "T0", unknown_authority=("T1",))
+
+    assert result.candidate == "T1"
+    assert result.unknown_authority_eligible == ("T1",)
+
+
+def test_rescan_orchestration_requests_fresh_snapshot_once_after_exhaustion(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    initial = fallback_state({
+        "T0": tool_state(loaded=False, purged=False, failed=True,
+                         backups=("T1",)),
+        "T1": tool_state(loaded=False, purged=False),
+    })
+    refreshed = fallback_state({
+        "T0": tool_state(loaded=False, purged=False, failed=True,
+                         backups=("T1",)),
+        "T1": tool_state(),
+    })
+    extension, _ = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        initial.to_dict()["tools"], sensors=False)
+    snapshots = FakeSnapshotSequence(initial, refreshed)
+
+    result = extension._resolve_backup_with_rescan("T0", snapshots)
+
+    assert result.candidate == "T1"
+    assert result.scan_count == 2
+    assert snapshots.calls == 2
+
+
+def test_rescan_orchestration_stops_after_exactly_two_exhausted_scans(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    state = fallback_state({
+        "T0": tool_state(loaded=False, purged=False, failed=True,
+                         backups=("T1",)),
+        "T1": tool_state(loaded=False, purged=False),
+    })
+    extension, _ = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        state.to_dict()["tools"], sensors=False)
+    snapshots = FakeSnapshotSequence(state, state, state)
+
+    result = extension._resolve_backup_with_rescan("T0", snapshots)
+
+    assert result.candidate is None
+    assert result.scan_count == 2
+    assert result.evaluated == ("T1",)
+    assert result.unloaded == ("T1",)
+    assert snapshots.calls == 2

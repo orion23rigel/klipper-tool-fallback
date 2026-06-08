@@ -45,6 +45,77 @@ class WorkflowCheckpoint:
     failure_reason: object = None
 
 
+@dataclass(frozen=True)
+class GraphResolution:
+    candidate: object
+    evaluated: tuple
+    unloaded: tuple
+    failed: tuple
+    looped: tuple
+    unknown_authority_eligible: tuple
+    scan_count: int = 1
+
+    def to_dict(self):
+        return {
+            "candidate": self.candidate,
+            "evaluated": list(self.evaluated),
+            "unloaded": list(self.unloaded),
+            "failed": list(self.failed),
+            "looped": list(self.looped),
+            "unknown_authority_eligible": list(
+                self.unknown_authority_eligible),
+            "scan_count": self.scan_count,
+        }
+
+
+def resolve_backup_graph(state, failed_tool, unknown_authority=()):
+    unknown_authority = frozenset(unknown_authority)
+    evaluated = []
+    evaluated_set = set()
+    unloaded = []
+    failed = []
+    looped = []
+    unknown_eligible = []
+
+    def visit(tool, ancestry):
+        if tool in ancestry:
+            looped.append("->".join(ancestry + (tool,)))
+            return None
+        if tool in evaluated_set:
+            return None
+        evaluated_set.add(tool)
+        evaluated.append(tool)
+        tool_state = state.tools[tool]
+        if not tool_state.loaded:
+            unloaded.append(tool)
+        if tool_state.failed:
+            failed.append(tool)
+        if tool_state.loaded and not tool_state.failed:
+            if tool in unknown_authority:
+                unknown_eligible.append(tool)
+            return tool
+        next_ancestry = ancestry + (tool,)
+        for backup in tool_state.backups:
+            candidate = visit(backup, next_ancestry)
+            if candidate is not None:
+                return candidate
+        return None
+
+    candidate = None
+    for backup in state.tools[failed_tool].backups:
+        candidate = visit(backup, (failed_tool,))
+        if candidate is not None:
+            break
+    return GraphResolution(
+        candidate=candidate,
+        evaluated=tuple(evaluated),
+        unloaded=tuple(unloaded),
+        failed=tuple(failed),
+        looped=tuple(looped),
+        unknown_authority_eligible=tuple(unknown_eligible),
+    )
+
+
 class ToolFallback:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -562,6 +633,25 @@ class ToolFallback:
             if mapped_physical == physical_tool:
                 return logical_tool
         return None
+
+    def _resolve_backup_with_rescan(self, failed_tool, snapshot_provider=None):
+        provider = snapshot_provider or self._canonical_state_snapshot
+        unknown_authority = self._unknown_sensor_authority()
+        first = resolve_backup_graph(
+            provider(), failed_tool, unknown_authority)
+        if first.candidate is not None:
+            return first
+        second = resolve_backup_graph(
+            provider(), failed_tool, self._unknown_sensor_authority())
+        return replace(second, scan_count=2)
+
+    def _canonical_state_snapshot(self):
+        return self.state
+
+    def _unknown_sensor_authority(self):
+        return frozenset(
+            tool for tool, runtime in self._sensor_runtime.items()
+            if runtime.authority == "unknown")
 
     def _authorize_explicit_tool_state(
             self, gcmd, physical_tool, command_name):

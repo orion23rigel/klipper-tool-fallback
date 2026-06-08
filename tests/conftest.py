@@ -86,6 +86,17 @@ class FakePrintStats:
         return {"state": self.state}
 
 
+class FakeSnapshotSequence:
+    def __init__(self, *snapshots):
+        self.snapshots = list(snapshots)
+        self.calls = 0
+
+    def __call__(self):
+        snapshot = self.snapshots[min(self.calls, len(self.snapshots) - 1)]
+        self.calls += 1
+        return snapshot
+
+
 class FakeGCode:
     def __init__(self):
         self.commands = {}
