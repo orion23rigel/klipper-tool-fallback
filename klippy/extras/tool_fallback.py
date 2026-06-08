@@ -1,9 +1,24 @@
 import json
 from dataclasses import asdict
+from dataclasses import dataclass
 from types import MappingProxyType
 
 from . import tool_fallback_config
 from . import tool_fallback_state
+
+
+SENSOR_POLL_INTERVAL = 0.25
+
+
+@dataclass
+class SensorRuntime:
+    name: object
+    sensor: object = None
+    authority: str = "unknown"
+    enabled: object = None
+    detected: object = None
+    outage_acknowledged: bool = False
+    poll_timer: object = None
 
 
 class ToolFallback:
@@ -20,6 +35,7 @@ class ToolFallback:
         self._active_logical_tool = None
         self._selected_physical_tool = None
         self._transition_active = False
+        self._sensor_runtime = {}
         self.printer.register_event_handler(
             "klippy:ready", self._handle_ready)
         self.gcode.register_command(
@@ -64,6 +80,7 @@ class ToolFallback:
         snapshot["active_logical_tool"] = self._active_logical_tool
         snapshot["selected_physical_tool"] = self._selected_physical_tool
         snapshot["transition_active"] = self._transition_active
+        snapshot["sensor_authority"] = self._sensor_status_snapshot()
         return snapshot
 
     def cmd_SHOW_TOOL_FALLBACK_STATE(self, gcmd):
@@ -120,6 +137,7 @@ class ToolFallback:
         self._state_store = store
         self.state = state
         self._physical_handlers = MappingProxyType(physical_handlers)
+        self._initialize_sensor_runtime(normalized.tools)
 
     def _capture_physical_handlers(self, tools):
         handlers = {}
@@ -166,6 +184,75 @@ class ToolFallback:
     def _persist_state(self, candidate):
         self._state_store.save(candidate)
         self.state = candidate
+
+    def _initialize_sensor_runtime(self, tools):
+        self._sensor_runtime = {
+            name: SensorRuntime(tool.filament_sensor)
+            for name, tool in tools.items()
+        }
+        reactor = self.printer.get_reactor()
+        eventtime = reactor.monotonic()
+        for name, runtime in self._sensor_runtime.items():
+            if runtime.name is not None:
+                runtime.sensor = self.printer.lookup_object(
+                    runtime.name, None)
+            self._update_sensor_runtime(name, eventtime)
+            runtime.poll_timer = reactor.register_timer(
+                self._sensor_poll_handler(name), reactor.NEVER)
+            reactor.update_timer(
+                runtime.poll_timer, eventtime + SENSOR_POLL_INTERVAL)
+
+    def _sensor_poll_handler(self, tool):
+        def callback(eventtime):
+            self._update_sensor_runtime(tool, eventtime)
+            return eventtime + SENSOR_POLL_INTERVAL
+        return callback
+
+    def _update_sensor_runtime(self, tool, eventtime):
+        runtime = self._sensor_runtime[tool]
+        status = self._read_sensor_status(runtime, eventtime)
+        if status is None:
+            runtime.authority = "unknown"
+            runtime.enabled = None
+            runtime.detected = None
+            return
+        runtime.enabled = status["enabled"]
+        runtime.detected = status["filament_detected"]
+        runtime.authority = (
+            "available" if status["enabled"] else "unknown")
+
+    def _read_sensor_status(self, runtime, eventtime):
+        sensor = runtime.sensor
+        if sensor is None or not callable(getattr(sensor, "get_status", None)):
+            return None
+        try:
+            status = sensor.get_status(eventtime)
+        except Exception:
+            return None
+        if type(status) is not dict:
+            return None
+        enabled = status.get("enabled")
+        detected = status.get("filament_detected")
+        if type(enabled) is not bool or type(detected) is not bool:
+            return None
+        return {
+            "enabled": enabled,
+            "filament_detected": detected,
+        }
+
+    def _sensor_status_snapshot(self):
+        return {
+            tool: {
+                "configured": runtime.name,
+                "authority": runtime.authority,
+                "enabled": runtime.enabled,
+                "detected": runtime.detected,
+                "outage_acknowledged": runtime.outage_acknowledged,
+            }
+            for tool, runtime in sorted(
+                self._sensor_runtime.items(),
+                key=lambda item: int(item[0][1:]))
+        }
 
     def _apply_mapping_candidate(self, gcmd, candidate):
         if candidate is self.state:
