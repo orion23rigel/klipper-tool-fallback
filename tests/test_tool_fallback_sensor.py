@@ -105,6 +105,9 @@ def test_startup_with_available_sensor_reports_verified_authority(
     printer.send_event("klippy:ready")
 
     status = extension.get_status(0.0)
+    assert status["sensor_authority"]["T0"]["authority"] == "unknown"
+    printer.reactor.advance(1.0)
+    status = extension.get_status(1.0)
     assert status["sensor_authority"]["T0"] == {
         "configured": "filament_switch_sensor tool_sensor",
         "authority": "available",
@@ -112,7 +115,7 @@ def test_startup_with_available_sensor_reports_verified_authority(
         "detected": True,
         "outage_acknowledged": False,
     }
-    assert sensor.status_calls == [0.0]
+    assert sensor.status_calls[-1] == 1.0
 
 
 def test_unknown_sensor_status_preserves_durable_filament_history(
@@ -239,10 +242,125 @@ def test_sensor_polling_restores_authority_without_persisting_runtime_status(
 
     monkeypatch.setattr(extension._state_store, "save", reject_save)
     sensor.enabled = True
-    sensor.filament_detected = True
+    sensor.filament_detected = False
     printer.reactor.advance(0.25)
 
     status = extension.get_status(0.25)
-    assert status["sensor_authority"]["T0"]["authority"] == "available"
-    assert status["sensor_authority"]["T0"]["detected"] is True
+    assert status["sensor_authority"]["T0"]["authority"] == "unknown"
+    assert status["sensor_authority"]["T0"]["detected"] is False
     assert "poll_timer" not in json.dumps(status, sort_keys=True)
+
+
+def test_startup_reconciliation_waits_for_full_symmetric_debounce(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    sensor = FakeFilamentSensor(enabled=True, filament_detected=True)
+    printer.add_object("filament_switch_sensor tool_sensor", sensor)
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+
+    printer.reactor.advance(0.99)
+    assert extension.state.tools["T0"].loaded is False
+    assert extension.get_status(0.99)["sensor_authority"]["T0"]["authority"] == (
+        "unknown")
+
+    printer.reactor.advance(0.01)
+    assert extension.state.tools["T0"].loaded is True
+    assert extension.state.tools["T0"].purged is False
+    assert extension.get_status(1.0)["sensor_authority"]["T0"]["authority"] == (
+        "available")
+
+
+def test_repeated_equal_polling_does_not_extend_debounce_deadline(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    sensor = FakeFilamentSensor(enabled=True, filament_detected=True)
+    printer.add_object("filament_switch_sensor tool_sensor", sensor)
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+
+    printer.reactor.advance(1.0)
+
+    assert extension.state.tools["T0"].loaded is True
+    assert extension._sensor_runtime["T0"].debounce_deadline is None
+
+
+def test_oscillation_invalidates_stale_debounce_candidate_symmetrically(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    sensor = FakeFilamentSensor(enabled=True, filament_detected=False)
+    printer.add_object("filament_switch_sensor tool_sensor", sensor)
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    printer.reactor.advance(1.0)
+
+    sensor.filament_detected = True
+    printer.reactor.advance(0.25)
+    sensor.filament_detected = False
+    printer.reactor.advance(0.25)
+    sensor.filament_detected = True
+    printer.reactor.advance(1.24)
+    assert extension.state.tools["T0"].loaded is False
+
+    printer.reactor.advance(0.01)
+    assert extension.state.tools["T0"].loaded is True
+
+    sensor.filament_detected = False
+    printer.reactor.advance(0.25)
+    printer.reactor.advance(0.99)
+    assert extension.state.tools["T0"].loaded is True
+    printer.reactor.advance(0.01)
+    assert extension.state.tools["T0"].loaded is False
+
+
+def test_startup_loaded_reconciliation_preserves_purged_and_clears_failed(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    path = tmp_path / "state.json"
+    StateStore(str(path)).save(FallbackState.from_dict({
+        "version": 1,
+        "tools": {
+            "T0": {
+                "loaded": True,
+                "purged": True,
+                "failed": True,
+                "backups": [],
+            },
+        },
+        "mappings": {"T0": "T0"},
+    }))
+    sensor = FakeFilamentSensor(enabled=True, filament_detected=True)
+    printer.add_object("filament_switch_sensor tool_sensor", sensor)
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, path)
+    printer.send_event("klippy:ready")
+
+    printer.reactor.advance(1.0)
+
+    assert extension.state.tools["T0"].loaded is True
+    assert extension.state.tools["T0"].purged is True
+    assert extension.state.tools["T0"].failed is False
+
+
+def test_persistence_failure_never_publishes_reconciled_candidate(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    sensor = FakeFilamentSensor(enabled=True, filament_detected=True)
+    printer.add_object("filament_switch_sensor tool_sensor", sensor)
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    original = extension.state
+
+    def fail_save(candidate):
+        raise OSError("injected reconciliation failure")
+
+    monkeypatch.setattr(extension._state_store, "save", fail_save)
+    try:
+        printer.reactor.advance(1.0)
+    except OSError as error:
+        assert str(error) == "injected reconciliation failure"
+    else:
+        raise AssertionError("expected injected reconciliation failure")
+
+    assert extension.state is original
+    assert extension.get_status(1.0)["sensor_authority"]["T0"]["authority"] == (
+        "unknown")

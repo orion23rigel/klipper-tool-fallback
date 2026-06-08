@@ -164,6 +164,14 @@ class FallbackState:
             ToolState(True, False, False, current.backups),
         )
 
+    def with_reconciled_filament_loaded(self, physical):
+        current = self._require_tool(physical)
+        return self._replace_tool(
+            physical,
+            ToolState(True, current.purged if current.loaded else False,
+                      False, current.backups),
+        )
+
     def with_filament_unloaded(self, physical):
         current = self._require_tool(physical)
         return self._replace_tool(

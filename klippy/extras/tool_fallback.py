@@ -17,6 +17,11 @@ class SensorRuntime:
     authority: str = "unknown"
     enabled: object = None
     detected: object = None
+    confirmed_detected: object = None
+    debounce_target: object = None
+    debounce_generation: int = 0
+    debounce_deadline: object = None
+    debounce_timer: object = None
     outage_acknowledged: bool = False
     poll_timer: object = None
 
@@ -196,9 +201,11 @@ class ToolFallback:
             if runtime.name is not None:
                 runtime.sensor = self.printer.lookup_object(
                     runtime.name, None)
-            self._update_sensor_runtime(name, eventtime)
+            runtime.debounce_timer = reactor.register_timer(
+                self._sensor_debounce_handler(name), reactor.NEVER)
             runtime.poll_timer = reactor.register_timer(
                 self._sensor_poll_handler(name), reactor.NEVER)
+            self._update_sensor_runtime(name, eventtime)
             reactor.update_timer(
                 runtime.poll_timer, eventtime + SENSOR_POLL_INTERVAL)
 
@@ -208,18 +215,78 @@ class ToolFallback:
             return eventtime + SENSOR_POLL_INTERVAL
         return callback
 
+    def _sensor_debounce_handler(self, tool):
+        def callback(eventtime):
+            runtime = self._sensor_runtime[tool]
+            if (runtime.debounce_deadline != eventtime
+                    or runtime.debounce_target is None):
+                return self.printer.get_reactor().NEVER
+            generation = runtime.debounce_generation
+            target = runtime.debounce_target
+            status = self._read_sensor_status(runtime, eventtime)
+            if status is None or not status["enabled"]:
+                self._set_sensor_unknown(runtime)
+                return self.printer.get_reactor().NEVER
+            runtime.enabled = status["enabled"]
+            runtime.detected = status["filament_detected"]
+            if (runtime.debounce_generation != generation
+                    or status["filament_detected"] != target):
+                self._observe_sensor_reading(tool, status, eventtime)
+                return self.printer.get_reactor().NEVER
+            candidate = (
+                self.state.with_reconciled_filament_loaded(tool)
+                if target else self.state.with_filament_unloaded(tool)
+            )
+            if candidate is not self.state:
+                self._persist_state(candidate)
+            runtime.authority = "available"
+            runtime.confirmed_detected = target
+            runtime.debounce_target = None
+            runtime.debounce_deadline = None
+            return self.printer.get_reactor().NEVER
+        return callback
+
     def _update_sensor_runtime(self, tool, eventtime):
         runtime = self._sensor_runtime[tool]
         status = self._read_sensor_status(runtime, eventtime)
-        if status is None:
-            runtime.authority = "unknown"
-            runtime.enabled = None
-            runtime.detected = None
+        if status is None or not status["enabled"]:
+            if status is None:
+                runtime.enabled = None
+                runtime.detected = None
+            else:
+                runtime.enabled = status["enabled"]
+                runtime.detected = status["filament_detected"]
+            self._set_sensor_unknown(runtime)
             return
+        self._observe_sensor_reading(tool, status, eventtime)
+
+    def _observe_sensor_reading(self, tool, status, eventtime):
+        runtime = self._sensor_runtime[tool]
         runtime.enabled = status["enabled"]
         runtime.detected = status["filament_detected"]
-        runtime.authority = (
-            "available" if status["enabled"] else "unknown")
+        detected = status["filament_detected"]
+        if (runtime.authority == "available"
+                and runtime.confirmed_detected == detected
+                and runtime.debounce_target is None):
+            return
+        if runtime.debounce_target == detected:
+            return
+        runtime.debounce_target = detected
+        runtime.debounce_generation += 1
+        runtime.debounce_deadline = (
+            eventtime + self.config.global_config.debounce_time)
+        self.printer.get_reactor().update_timer(
+            runtime.debounce_timer, runtime.debounce_deadline)
+
+    def _set_sensor_unknown(self, runtime):
+        runtime.authority = "unknown"
+        runtime.confirmed_detected = None
+        runtime.debounce_target = None
+        runtime.debounce_generation += 1
+        runtime.debounce_deadline = None
+        if runtime.debounce_timer is not None:
+            self.printer.get_reactor().update_timer(
+                runtime.debounce_timer, self.printer.get_reactor().NEVER)
 
     def _read_sensor_status(self, runtime, eventtime):
         sensor = runtime.sensor
