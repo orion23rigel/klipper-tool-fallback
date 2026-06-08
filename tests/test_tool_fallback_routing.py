@@ -325,6 +325,36 @@ def test_logical_selection_does_not_write_state(
     assert extension._selected_physical_tool == "T0"
 
 
+def test_sensor_hooks_and_explicit_state_never_mutate_routes_or_select_backup(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    events = []
+    handlers = {
+        name: physical_handler_spy(name, events)
+        for name in ("T0", "T1", "T2")
+    }
+    print_stats = FakePrintStats("printing")
+    printer.add_object("print_stats", print_stats)
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+    extension._selected_physical_tool = "T0"
+    original_mappings = dict(extension.state.mappings)
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT", FakeGCmd({"TOOL": "T0"}))
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_INSERT", FakeGCmd({"TOOL": "T1"}))
+    printer.gcode.invoke_command(
+        "SET_TOOL_FILAMENT_STATE",
+        FakeGCmd({"TOOL": "T1", "LOADED": "1"}))
+
+    assert dict(extension.state.mappings) == original_mappings
+    assert extension._selected_physical_tool == "T0"
+    assert events == []
+    assert printer.gcode.script_events == []
+
+
 def test_logical_selection_rejects_pre_ready_and_active_transition(
         config_factory, prefix_config_factory, printer, tmp_path):
     handlers = {

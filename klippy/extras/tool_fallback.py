@@ -22,6 +22,8 @@ class SensorRuntime:
     debounce_generation: int = 0
     debounce_deadline: object = None
     debounce_timer: object = None
+    debounce_origin: object = None
+    pending_runout_context: bool = False
     outage_acknowledged: bool = False
     poll_timer: object = None
 
@@ -58,6 +60,15 @@ class ToolFallback:
         self.gcode.register_command(
             "RESET_TOOL_MAPPINGS", self.cmd_RESET_TOOL_MAPPINGS,
             desc="Restore all logical tools to identity mappings")
+        self.gcode.register_command(
+            "TOOL_FALLBACK_RUNOUT", self.cmd_TOOL_FALLBACK_RUNOUT,
+            desc="Record a tool fallback filament runout event")
+        self.gcode.register_command(
+            "TOOL_FALLBACK_INSERT", self.cmd_TOOL_FALLBACK_INSERT,
+            desc="Record a tool fallback filament insert event")
+        self.gcode.register_command(
+            "SET_TOOL_FILAMENT_STATE", self.cmd_SET_TOOL_FILAMENT_STATE,
+            desc="Set operator-owned tool fallback filament state")
 
     def register_tool(self, tool):
         if tool.name in self._tools:
@@ -116,6 +127,36 @@ class ToolFallback:
             raise gcmd.error("Tool fallback routing is not initialized")
         candidate = self.state.with_identity_mappings()
         self._apply_mapping_candidate(gcmd, candidate)
+
+    def cmd_TOOL_FALLBACK_RUNOUT(self, gcmd):
+        physical_tool = self._require_configured_tool(gcmd, "TOOL")
+        self._record_sensor_event(physical_tool, False)
+
+    def cmd_TOOL_FALLBACK_INSERT(self, gcmd):
+        physical_tool = self._require_configured_tool(gcmd, "TOOL")
+        self._record_sensor_event(physical_tool, True)
+
+    def cmd_SET_TOOL_FILAMENT_STATE(self, gcmd):
+        physical_tool = self._require_configured_tool(gcmd, "TOOL")
+        loaded = gcmd.get_int("LOADED", minval=0, maxval=1) == 1
+        self._authorize_explicit_tool_state(gcmd, physical_tool)
+        runtime = self._sensor_runtime.get(physical_tool)
+        if runtime is not None and runtime.authority == "available":
+            gcmd.respond_info(
+                "Tool %s filament state override may be superseded by its "
+                "enabled sensor" % (physical_tool,))
+        candidate = (
+            self.state.with_filament_loaded(physical_tool)
+            if loaded else self.state.with_filament_unloaded(physical_tool)
+        )
+        if candidate is self.state:
+            return
+        try:
+            self._persist_state(candidate)
+        except OSError as error:
+            raise gcmd.error(
+                "Unable to persist tool fallback filament state: %s" %
+                (error,))
 
     def _handle_ready(self):
         normalized = self.finalize_configuration()
@@ -231,20 +272,28 @@ class ToolFallback:
             runtime.detected = status["filament_detected"]
             if (runtime.debounce_generation != generation
                     or status["filament_detected"] != target):
-                self._observe_sensor_reading(tool, status, eventtime)
+                self._observe_sensor_reading(tool, status, eventtime, None)
                 return self.printer.get_reactor().NEVER
-            candidate = (
-                self.state.with_reconciled_filament_loaded(tool)
-                if target else self.state.with_filament_unloaded(tool)
-            )
+            candidate = self._build_sensor_filament_candidate(tool, runtime)
             if candidate is not self.state:
                 self._persist_state(candidate)
             runtime.authority = "available"
             runtime.confirmed_detected = target
             runtime.debounce_target = None
             runtime.debounce_deadline = None
+            runtime.debounce_origin = None
+            runtime.pending_runout_context = False
             return self.printer.get_reactor().NEVER
         return callback
+
+    def _build_sensor_filament_candidate(self, tool, runtime):
+        if runtime.debounce_target:
+            if runtime.debounce_origin == "insert":
+                return self.state.with_filament_loaded(tool)
+            return self.state.with_reconciled_filament_loaded(tool)
+        if runtime.pending_runout_context:
+            return self.state.with_failed_runout(tool)
+        return self.state.with_filament_unloaded(tool)
 
     def _update_sensor_runtime(self, tool, eventtime):
         runtime = self._sensor_runtime[tool]
@@ -258,9 +307,9 @@ class ToolFallback:
                 runtime.detected = status["filament_detected"]
             self._set_sensor_unknown(runtime)
             return
-        self._observe_sensor_reading(tool, status, eventtime)
+        self._observe_sensor_reading(tool, status, eventtime, None)
 
-    def _observe_sensor_reading(self, tool, status, eventtime):
+    def _observe_sensor_reading(self, tool, status, eventtime, origin):
         runtime = self._sensor_runtime[tool]
         runtime.enabled = status["enabled"]
         runtime.detected = status["filament_detected"]
@@ -270,11 +319,21 @@ class ToolFallback:
                 and runtime.debounce_target is None):
             return
         if runtime.debounce_target == detected:
+            if origin is not None:
+                runtime.debounce_origin = origin
+                runtime.pending_runout_context = (
+                    origin == "runout"
+                    and self._selected_physical_tool == tool
+                    and self._print_is_active())
             return
         runtime.debounce_target = detected
         runtime.debounce_generation += 1
         runtime.debounce_deadline = (
             eventtime + self.config.global_config.debounce_time)
+        runtime.debounce_origin = origin
+        runtime.pending_runout_context = (
+            origin == "runout" and self._selected_physical_tool == tool
+            and self._print_is_active())
         self.printer.get_reactor().update_timer(
             runtime.debounce_timer, runtime.debounce_deadline)
 
@@ -284,9 +343,33 @@ class ToolFallback:
         runtime.debounce_target = None
         runtime.debounce_generation += 1
         runtime.debounce_deadline = None
+        runtime.debounce_origin = None
+        runtime.pending_runout_context = False
         if runtime.debounce_timer is not None:
             self.printer.get_reactor().update_timer(
                 runtime.debounce_timer, self.printer.get_reactor().NEVER)
+
+    def _record_sensor_event(self, tool, detected):
+        runtime = self._sensor_runtime[tool]
+        eventtime = self.printer.get_reactor().monotonic()
+        status = self._read_sensor_status(runtime, eventtime)
+        if status is None or not status["enabled"]:
+            self._set_sensor_unknown(runtime)
+            return
+        if status["filament_detected"] != detected:
+            self._observe_sensor_reading(tool, status, eventtime, None)
+            return
+        self._observe_sensor_reading(
+            tool, status, eventtime, "insert" if detected else "runout")
+
+    def _authorize_explicit_tool_state(self, gcmd, physical_tool):
+        print_state = self._get_print_state()
+        if (print_state == "printing"
+                and physical_tool == self._selected_physical_tool):
+            raise gcmd.error(
+                "SET_TOOL_FILAMENT_STATE for selected physical tool %s is "
+                "only available while paused or outside a print" %
+                (physical_tool,))
 
     def _read_sensor_status(self, runtime, eventtime):
         sensor = runtime.sensor

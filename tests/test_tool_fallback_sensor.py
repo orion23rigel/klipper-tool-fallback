@@ -1,6 +1,9 @@
 import json
 
-from conftest import FakeFilamentSensor, FakeGCmd, FakeReactor
+import pytest
+
+from conftest import (CommandError, FakeFilamentSensor, FakeGCmd,
+                      FakePrintStats, FakeReactor)
 from klippy.extras import tool_fallback
 from klippy.extras.tool_fallback_state import FallbackState, StateStore
 
@@ -27,6 +30,14 @@ def load_extension(config_factory, prefix_config_factory, printer, state_path,
         tool_fallback.load_config_prefix(
             prefix_config_factory("tool_fallback %s" % name, **options))
     return extension
+
+
+def persist_state(path, tool_states, mappings=None):
+    StateStore(str(path)).save(FallbackState.from_dict({
+        "version": 1,
+        "tools": tool_states,
+        "mappings": mappings or {name: name for name in tool_states},
+    }))
 
 
 def test_fake_reactor_advances_due_timers_in_stable_order_and_reschedules():
@@ -364,3 +375,165 @@ def test_persistence_failure_never_publishes_reconciled_candidate(
     assert extension.state is original
     assert extension.get_status(1.0)["sensor_authority"]["T0"]["authority"] == (
         "unknown")
+
+
+def test_TOOL_FALLBACK_RUNOUT_marks_failed_only_for_confirmed_selected_active_job(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    path = tmp_path / "state.json"
+    persist_state(path, {
+        "T0": {
+            "loaded": True,
+            "purged": True,
+            "failed": False,
+            "backups": [],
+        },
+        "T1": {
+            "loaded": True,
+            "purged": True,
+            "failed": False,
+            "backups": [],
+        },
+    })
+    sensors = {
+        "filament_switch_sensor tool_sensor": FakeFilamentSensor(
+            enabled=True, filament_detected=True),
+        "filament_switch_sensor tool_sensor_T1": FakeFilamentSensor(
+            enabled=True, filament_detected=True),
+    }
+    for name, sensor in sensors.items():
+        printer.add_object(name, sensor)
+    printer.add_object("print_stats", FakePrintStats("printing"))
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, path,
+        tools=(
+            ("T0", {}),
+            ("T1", {"filament_sensor": "filament_switch_sensor tool_sensor_T1"}),
+        ))
+    printer.send_event("klippy:ready")
+    printer.reactor.advance(1.0)
+    extension._selected_physical_tool = "T0"
+
+    sensors["filament_switch_sensor tool_sensor"].filament_detected = False
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT", FakeGCmd({"TOOL": "T0"}))
+    sensors["filament_switch_sensor tool_sensor_T1"].filament_detected = False
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT", FakeGCmd({"TOOL": "T1"}))
+    printer.reactor.advance(1.0)
+
+    assert extension.state.tools["T0"].loaded is False
+    assert extension.state.tools["T0"].purged is False
+    assert extension.state.tools["T0"].failed is True
+    assert extension.state.tools["T1"].loaded is False
+    assert extension.state.tools["T1"].purged is False
+    assert extension.state.tools["T1"].failed is False
+
+
+def test_TOOL_FALLBACK_RUNOUT_upgrades_existing_poll_candidate_without_extension(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    sensor = FakeFilamentSensor(enabled=True, filament_detected=True)
+    printer.add_object("filament_switch_sensor tool_sensor", sensor)
+    printer.add_object("print_stats", FakePrintStats("printing"))
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    printer.reactor.advance(1.0)
+    extension._selected_physical_tool = "T0"
+
+    sensor.filament_detected = False
+    printer.reactor.advance(0.25)
+    deadline = extension._sensor_runtime["T0"].debounce_deadline
+    printer.reactor.advance(0.25)
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT", FakeGCmd({"TOOL": "T0"}))
+
+    assert extension._sensor_runtime["T0"].debounce_deadline == deadline
+    printer.reactor.advance(0.75)
+    assert extension.state.tools["T0"].failed is True
+
+
+def test_TOOL_FALLBACK_INSERT_clears_failed_and_marks_unpurged(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    path = tmp_path / "state.json"
+    persist_state(path, {
+        "T0": {
+            "loaded": False,
+            "purged": False,
+            "failed": True,
+            "backups": [],
+        },
+    })
+    sensor = FakeFilamentSensor(enabled=True, filament_detected=False)
+    printer.add_object("filament_switch_sensor tool_sensor", sensor)
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, path)
+    printer.send_event("klippy:ready")
+    printer.reactor.advance(1.0)
+
+    sensor.filament_detected = True
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_INSERT", FakeGCmd({"TOOL": "T0"}))
+    printer.reactor.advance(1.0)
+
+    assert extension.state.tools["T0"].loaded is True
+    assert extension.state.tools["T0"].purged is False
+    assert extension.state.tools["T0"].failed is False
+
+
+def test_SET_TOOL_FILAMENT_STATE_authorization_and_state_semantics(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    path = tmp_path / "state.json"
+    persist_state(path, {
+        "T0": {
+            "loaded": True,
+            "purged": True,
+            "failed": False,
+            "backups": [],
+        },
+        "T1": {
+            "loaded": False,
+            "purged": False,
+            "failed": True,
+            "backups": [],
+        },
+    })
+    printer.add_object(
+        "filament_switch_sensor tool_sensor",
+        FakeFilamentSensor(enabled=True, filament_detected=True))
+    printer.add_object(
+        "filament_switch_sensor tool_sensor_T1",
+        FakeFilamentSensor(enabled=True, filament_detected=False))
+    print_stats = FakePrintStats("printing")
+    printer.add_object("print_stats", print_stats)
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, path,
+        tools=(
+            ("T0", {}),
+            ("T1", {"filament_sensor": "filament_switch_sensor tool_sensor_T1"}),
+        ))
+    printer.send_event("klippy:ready")
+    printer.reactor.advance(1.0)
+    extension._selected_physical_tool = "T0"
+
+    printer.gcode.invoke_command(
+        "SET_TOOL_FILAMENT_STATE",
+        FakeGCmd({"TOOL": "T1", "LOADED": "1"}))
+    assert extension.state.tools["T1"].loaded is True
+    assert extension.state.tools["T1"].purged is False
+    assert extension.state.tools["T1"].failed is False
+
+    with pytest.raises(CommandError, match="only available while paused"):
+        printer.gcode.invoke_command(
+            "SET_TOOL_FILAMENT_STATE",
+            FakeGCmd({"TOOL": "T0", "LOADED": "0"}))
+    assert extension.state.tools["T0"].loaded is True
+    assert extension.state.tools["T0"].purged is True
+
+    print_stats.set_state("paused")
+    printer.gcode.invoke_command(
+        "SET_TOOL_FILAMENT_STATE",
+        FakeGCmd({"TOOL": "T0", "LOADED": "0"}))
+    assert extension.state.tools["T0"].loaded is False
+    assert extension.state.tools["T0"].purged is False
+    assert extension.state.tools["T0"].failed is False
+    assert printer.gcode.script_events == []
