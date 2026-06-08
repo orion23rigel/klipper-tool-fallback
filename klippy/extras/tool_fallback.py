@@ -1,6 +1,7 @@
 import json
 from dataclasses import asdict
 from dataclasses import dataclass
+from dataclasses import replace
 from types import MappingProxyType
 
 from . import tool_fallback_config
@@ -23,11 +24,25 @@ class SensorRuntime:
     debounce_deadline: object = None
     debounce_timer: object = None
     debounce_origin: object = None
-    pending_runout_context: bool = False
     outage_acknowledged: bool = False
     outage_pause_suppressed: bool = False
     outage_pause_pending: bool = False
     poll_timer: object = None
+
+
+@dataclass(frozen=True)
+class WorkflowCheckpoint:
+    source: str
+    stage: str
+    generation: int
+    logical_tool: object = None
+    current_physical_tool: object = None
+    requested_physical_tool: object = None
+    pause_owned: bool = False
+    target_temperature: object = None
+    stage_deadline: object = None
+    graph_report: object = None
+    failure_reason: object = None
 
 
 class ToolFallback:
@@ -45,6 +60,8 @@ class ToolFallback:
         self._selected_physical_tool = None
         self._transition_active = False
         self._sensor_runtime = {}
+        self._workflow_checkpoint = None
+        self._workflow_generation = 0
         self.printer.register_event_handler(
             "klippy:ready", self._handle_ready)
         self.gcode.register_command(
@@ -141,6 +158,9 @@ class ToolFallback:
 
     def cmd_TOOL_FALLBACK_RUNOUT(self, gcmd):
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
+        pause_owned = gcmd.get_int(
+            "PAUSE_OWNED", 0, minval=0, maxval=1) == 1
+        self._begin_pending_runout(physical_tool, pause_owned)
         self._record_sensor_event(physical_tool, False)
 
     def cmd_TOOL_FALLBACK_INSERT(self, gcmd):
@@ -339,6 +359,7 @@ class ToolFallback:
             candidate = self._build_sensor_filament_candidate(tool, runtime)
             if candidate is not self.state:
                 self._persist_state(candidate)
+            pending = self._pending_runout_checkpoint(tool)
             runtime.authority = "available"
             runtime.confirmed_detected = target
             runtime.outage_acknowledged = False
@@ -347,7 +368,11 @@ class ToolFallback:
             runtime.debounce_target = None
             runtime.debounce_deadline = None
             runtime.debounce_origin = None
-            runtime.pending_runout_context = False
+            if pending is not None:
+                if target:
+                    self._complete_transient_runout(pending)
+                else:
+                    self._confirmed_runout(pending)
             return self.printer.get_reactor().NEVER
         return callback
 
@@ -356,7 +381,7 @@ class ToolFallback:
             if runtime.debounce_origin == "insert":
                 return self.state.with_filament_loaded(tool)
             return self.state.with_reconciled_filament_loaded(tool)
-        if runtime.pending_runout_context:
+        if self._pending_runout_checkpoint(tool) is not None:
             return self.state.with_failed_runout(tool)
         return self.state.with_filament_unloaded(tool)
 
@@ -386,19 +411,12 @@ class ToolFallback:
         if runtime.debounce_target == detected:
             if origin is not None:
                 runtime.debounce_origin = origin
-                runtime.pending_runout_context = (
-                    origin == "runout"
-                    and self._selected_physical_tool == tool
-                    and self._print_is_active())
             return
         runtime.debounce_target = detected
         runtime.debounce_generation += 1
         runtime.debounce_deadline = (
             eventtime + self.config.global_config.debounce_time)
         runtime.debounce_origin = origin
-        runtime.pending_runout_context = (
-            origin == "runout" and self._selected_physical_tool == tool
-            and self._print_is_active())
         self.printer.get_reactor().update_timer(
             runtime.debounce_timer, runtime.debounce_deadline)
 
@@ -410,7 +428,6 @@ class ToolFallback:
         runtime.debounce_generation += 1
         runtime.debounce_deadline = None
         runtime.debounce_origin = None
-        runtime.pending_runout_context = False
         if runtime.debounce_timer is not None:
             self.printer.get_reactor().update_timer(
                 runtime.debounce_timer, self.printer.get_reactor().NEVER)
@@ -455,6 +472,96 @@ class ToolFallback:
             return
         self._observe_sensor_reading(
             tool, status, eventtime, "insert" if detected else "runout")
+
+    def _begin_pending_runout(self, physical_tool, requested_ownership):
+        if self._workflow_checkpoint is not None:
+            if (self._workflow_checkpoint.source == "automatic_fallback"
+                    and self._workflow_checkpoint.stage == "debouncing"
+                    and self._workflow_checkpoint.current_physical_tool
+                    == physical_tool):
+                return
+            self.gcode.respond_info(
+                "Ignoring runout for %s because another tool fallback "
+                "workflow is active" % (physical_tool,))
+            return
+        print_state = self._get_print_state()
+        selected = self._selected_physical_tool == physical_tool
+        active_context = print_state in ("printing", "paused")
+        if not selected or not active_context:
+            return
+        pause_owned = bool(
+            requested_ownership and print_state == "paused" and selected)
+        self._workflow_generation += 1
+        self._workflow_checkpoint = WorkflowCheckpoint(
+            source="automatic_fallback",
+            stage="debouncing",
+            generation=self._workflow_generation,
+            logical_tool=self._logical_for_physical(physical_tool),
+            current_physical_tool=physical_tool,
+            pause_owned=pause_owned,
+        )
+
+    def _pending_runout_checkpoint(self, physical_tool):
+        checkpoint = self._workflow_checkpoint
+        if (checkpoint is None
+                or checkpoint.source != "automatic_fallback"
+                or checkpoint.stage != "debouncing"
+                or checkpoint.current_physical_tool != physical_tool):
+            return None
+        return checkpoint
+
+    def _complete_transient_runout(self, checkpoint):
+        if not self._checkpoint_matches(
+                checkpoint.generation, "debouncing"):
+            return
+        self.gcode.respond_info(
+            "Tool %s runout cleared before confirmation" %
+            (checkpoint.current_physical_tool,))
+        self._workflow_checkpoint = None
+        if not checkpoint.pause_owned:
+            return
+        try:
+            self.gcode.run_script_from_command(
+                self.config.global_config.resume_gcode)
+        except Exception as error:
+            self._workflow_checkpoint = replace(
+                checkpoint,
+                stage="blocked",
+                failure_reason="Unable to resume after transient runout: %s" %
+                (error,),
+            )
+            self.gcode.respond_info(
+                self._workflow_checkpoint.failure_reason)
+
+    def _confirmed_runout(self, checkpoint):
+        if not self._checkpoint_matches(
+                checkpoint.generation, "debouncing"):
+            return
+        self._workflow_checkpoint = replace(
+            checkpoint, stage="confirmed_runout")
+        self._on_confirmed_runout(self._workflow_checkpoint)
+
+    def _on_confirmed_runout(self, checkpoint):
+        # Later Phase 4 plans advance the confirmed, already-persisted runout.
+        return None
+
+    def _checkpoint_matches(self, generation, stage):
+        checkpoint = self._workflow_checkpoint
+        return (
+            checkpoint is not None
+            and checkpoint.generation == generation
+            and checkpoint.stage == stage
+        )
+
+    def _logical_for_physical(self, physical_tool):
+        if self._active_logical_tool is not None:
+            if self.state.mappings.get(
+                    self._active_logical_tool) == physical_tool:
+                return self._active_logical_tool
+        for logical_tool, mapped_physical in self.state.mappings.items():
+            if mapped_physical == physical_tool:
+                return logical_tool
+        return None
 
     def _authorize_explicit_tool_state(
             self, gcmd, physical_tool, command_name):
