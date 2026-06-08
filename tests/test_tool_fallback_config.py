@@ -38,7 +38,7 @@ def test_global_config_uses_design_defaults(config_factory, printer):
     assert normalized.debounce_time == 1.0
     assert normalized.pause_gcode == "PAUSE"
     assert normalized.resume_gcode == "RESUME"
-    assert normalized.purge_gcode == "PURGE_TOOL"
+    assert normalized.purge_gcode == "_TOOL_FALLBACK_PURGE"
     assert normalized.notify_gcode == "_TOOL_FALLBACK_NOTIFY"
     assert normalized.selection_timeout == 120.0
     assert normalized.heating_timeout == 300.0
@@ -159,7 +159,20 @@ def test_invalid_backup_references_block_startup(
         extension.finalize_configuration()
 
 
-@pytest.mark.parametrize("missing_option", ["filament_sensor", "heater"])
+def test_optional_omitted_filament_sensor_normalizes_to_unknown_capable_configuration(
+        config_factory, prefix_config_factory, printer):
+    load_extension(config_factory, printer)
+    options = tool_options()
+    del options["filament_sensor"]
+
+    tool, config = load_tool(
+        prefix_config_factory, "tool_fallback T0", **options)
+
+    assert tool.filament_sensor is None
+    config.assert_all_options_read()
+
+
+@pytest.mark.parametrize("missing_option", ["heater"])
 def test_missing_required_tool_values_block_startup(
         missing_option, config_factory, prefix_config_factory, printer):
     load_extension(config_factory, printer)
@@ -191,6 +204,19 @@ def test_empty_global_adapter_values_block_startup(
         option, config_factory, printer):
     with pytest.raises(ConfigError, match="must not be empty"):
         load_extension(config_factory, printer, **{option: " "})
+
+
+@pytest.mark.parametrize("adapter", [
+    "PURGE_TOOL",
+    "purge_tool",
+    "  PuRgE_ToOl  ",
+    "PURGE_TOOL TOOL=T0",
+    "purge_tool TOOL=T1 EXTRA=1",
+])
+def test_recursive_public_purge_adapter_variants_block_startup(
+        adapter, config_factory, printer):
+    with pytest.raises(ConfigError, match="must not invoke public PURGE_TOOL"):
+        load_extension(config_factory, printer, purge_gcode=adapter)
 
 
 @pytest.mark.parametrize("option", [

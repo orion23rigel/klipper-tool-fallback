@@ -10,11 +10,67 @@ class CommandError(Exception):
 
 
 class FakeReactor:
+    NEVER = float("inf")
+
     def __init__(self):
         self.monotonic_time = 0.0
+        self.timers = []
+        self._timer_order = 0
 
     def monotonic(self):
         return self.monotonic_time
+
+    def register_timer(self, callback, waketime=NEVER):
+        timer = {
+            "callback": callback,
+            "waketime": waketime,
+            "order": self._timer_order,
+        }
+        self._timer_order += 1
+        self.timers.append(timer)
+        return timer
+
+    def update_timer(self, timer, waketime):
+        timer["waketime"] = waketime
+
+    def advance(self, seconds):
+        target = self.monotonic_time + seconds
+        while True:
+            due = [
+                timer for timer in self.timers
+                if timer["waketime"] <= target
+            ]
+            if not due:
+                break
+            timer = min(due, key=lambda item: (
+                item["waketime"], item["order"]))
+            eventtime = timer["waketime"]
+            timer["waketime"] = self.NEVER
+            self.monotonic_time = eventtime
+            next_waketime = timer["callback"](eventtime)
+            if next_waketime is not None:
+                timer["waketime"] = next_waketime
+        self.monotonic_time = target
+
+
+class FakeFilamentSensor:
+    def __init__(self, enabled=True, filament_detected=False):
+        self.enabled = enabled
+        self.filament_detected = filament_detected
+        self.status_calls = []
+        self.malformed_status = None
+        self.status_error = None
+
+    def get_status(self, eventtime):
+        self.status_calls.append(eventtime)
+        if self.status_error is not None:
+            raise self.status_error
+        if self.malformed_status is not None:
+            return self.malformed_status
+        return {
+            "enabled": self.enabled,
+            "filament_detected": self.filament_detected,
+        }
 
 
 class FakePrintStats:
@@ -200,6 +256,24 @@ class FakeGCmd:
         if default is not ...:
             return default
         raise self.error("Parameter '%s' must be specified" % (name,))
+
+    def get_int(self, name, default=..., minval=None, maxval=None):
+        raw = self.get(name, default)
+        if raw is default:
+            return raw
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            raise self.error("Parameter '%s' must be an integer" % (name,))
+        if str(value) != str(raw).strip():
+            raise self.error("Parameter '%s' must be an integer" % (name,))
+        if minval is not None and value < minval:
+            raise self.error("Parameter '%s' must be at least %s" %
+                             (name, minval))
+        if maxval is not None and value > maxval:
+            raise self.error("Parameter '%s' must be at most %s" %
+                             (name, maxval))
+        return value
 
     def respond_info(self, message):
         self.responses.append(message)
