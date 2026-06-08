@@ -103,6 +103,7 @@ class FakeGCode:
         self.responses = []
         self.script_events = []
         self.script_failures = {}
+        self.workflow_events = []
         self.printer = None
 
     def register_command(self, name, handler, desc=None):
@@ -139,6 +140,9 @@ class FakeGCode:
 
     def respond_info(self, message):
         self.responses.append(message)
+
+    def record_workflow_event(self, event, **details):
+        self.workflow_events.append((event, details))
 
 
 class FakePrinter:

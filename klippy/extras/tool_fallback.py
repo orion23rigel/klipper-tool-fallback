@@ -196,6 +196,7 @@ class ToolFallback:
         snapshot["selected_physical_tool"] = self._selected_physical_tool
         snapshot["transition_active"] = self._transition_active
         snapshot["sensor_authority"] = self._sensor_status_snapshot()
+        snapshot["workflow"] = self._workflow_status_snapshot()
         return snapshot
 
     def cmd_SHOW_TOOL_FALLBACK_STATE(self, gcmd):
@@ -203,6 +204,7 @@ class ToolFallback:
         gcmd.respond_info(json.dumps(snapshot, indent=2, sort_keys=True))
 
     def cmd_SELECT_PHYSICAL_TOOL(self, gcmd):
+        self._guard_workflow_operation(gcmd.error, "physical tool selection")
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
         if self._print_is_active():
             raise gcmd.error(
@@ -211,17 +213,20 @@ class ToolFallback:
         self._select_physical(physical_tool)
 
     def cmd_REMAP_TOOL(self, gcmd):
+        self._guard_workflow_operation(gcmd.error, "tool remapping")
         logical_tool = self._require_configured_tool(gcmd, "LOGICAL")
         physical_tool = self._require_configured_tool(gcmd, "PHYSICAL")
         candidate = self.state.with_mapping(logical_tool, physical_tool)
         self._apply_mapping_candidate(gcmd, candidate)
 
     def cmd_RESTORE_TOOL(self, gcmd):
+        self._guard_workflow_operation(gcmd.error, "tool mapping restore")
         logical_tool = self._require_configured_tool(gcmd, "TOOL")
         candidate = self.state.with_identity_mapping(logical_tool)
         self._apply_mapping_candidate(gcmd, candidate)
 
     def cmd_RESET_TOOL_MAPPINGS(self, gcmd):
+        self._guard_workflow_operation(gcmd.error, "tool mapping reset")
         if self.state is None or self._physical_handlers is None:
             raise gcmd.error("Tool fallback routing is not initialized")
         candidate = self.state.with_identity_mappings()
@@ -231,8 +236,8 @@ class ToolFallback:
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
         pause_owned = gcmd.get_int(
             "PAUSE_OWNED", 0, minval=0, maxval=1) == 1
-        self._begin_pending_runout(physical_tool, pause_owned)
-        self._record_sensor_event(physical_tool, False)
+        self._record_sensor_event(
+            physical_tool, False, requested_ownership=pause_owned)
 
     def cmd_TOOL_FALLBACK_INSERT(self, gcmd):
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
@@ -335,6 +340,7 @@ class ToolFallback:
     def _route_logical(self, logical_tool, gcmd):
         if self.state is None or self._physical_handlers is None:
             raise gcmd.error("Tool fallback routing is not initialized")
+        self._guard_workflow_operation(gcmd.error, "logical tool selection")
         if self._transition_active:
             raise gcmd.error(
                 "Cannot select logical tool %s during an active transition" %
@@ -531,7 +537,8 @@ class ToolFallback:
         runtime.outage_acknowledged = True
         runtime.outage_pause_pending = False
 
-    def _record_sensor_event(self, tool, detected):
+    def _record_sensor_event(
+            self, tool, detected, requested_ownership=False):
         runtime = self._sensor_runtime[tool]
         eventtime = self.printer.get_reactor().monotonic()
         status = self._read_sensor_status(runtime, eventtime)
@@ -541,6 +548,8 @@ class ToolFallback:
         if status["filament_detected"] != detected:
             self._observe_sensor_reading(tool, status, eventtime, None)
             return
+        if not detected:
+            self._begin_pending_runout(tool, requested_ownership)
         self._observe_sensor_reading(
             tool, status, eventtime, "insert" if detected else "runout")
 
@@ -605,12 +614,11 @@ class ToolFallback:
                 self._workflow_checkpoint.failure_reason)
 
     def _confirmed_runout(self, checkpoint):
-        if not self._checkpoint_matches(
-                checkpoint.generation, "debouncing"):
+        advanced = self._advance_workflow_checkpoint(
+            checkpoint.generation, "debouncing", "confirmed_runout")
+        if advanced is None:
             return
-        self._workflow_checkpoint = replace(
-            checkpoint, stage="confirmed_runout")
-        self._on_confirmed_runout(self._workflow_checkpoint)
+        self._on_confirmed_runout(advanced)
 
     def _on_confirmed_runout(self, checkpoint):
         # Later Phase 4 plans advance the confirmed, already-persisted runout.
@@ -623,6 +631,14 @@ class ToolFallback:
             and checkpoint.generation == generation
             and checkpoint.stage == stage
         )
+
+    def _advance_workflow_checkpoint(
+            self, generation, expected_stage, next_stage, **changes):
+        if not self._checkpoint_matches(generation, expected_stage):
+            return None
+        self._workflow_checkpoint = replace(
+            self._workflow_checkpoint, stage=next_stage, **changes)
+        return self._workflow_checkpoint
 
     def _logical_for_physical(self, physical_tool):
         if self._active_logical_tool is not None:
@@ -652,6 +668,36 @@ class ToolFallback:
         return frozenset(
             tool for tool, runtime in self._sensor_runtime.items()
             if runtime.authority == "unknown")
+
+    def _workflow_status_snapshot(self):
+        checkpoint = self._workflow_checkpoint
+        if checkpoint is None:
+            return None
+        graph_report = checkpoint.graph_report
+        if isinstance(graph_report, GraphResolution):
+            graph_report = graph_report.to_dict()
+        return {
+            "source": checkpoint.source,
+            "stage": checkpoint.stage,
+            "generation": checkpoint.generation,
+            "logical_tool": checkpoint.logical_tool,
+            "current_physical_tool": checkpoint.current_physical_tool,
+            "requested_physical_tool": checkpoint.requested_physical_tool,
+            "pause_owned": checkpoint.pause_owned,
+            "target_temperature": checkpoint.target_temperature,
+            "stage_deadline": checkpoint.stage_deadline,
+            "graph_report": graph_report,
+            "failure_reason": checkpoint.failure_reason,
+        }
+
+    def _guard_workflow_operation(self, error_factory, operation):
+        checkpoint = self._workflow_checkpoint
+        if checkpoint is None:
+            return
+        raise error_factory(
+            "Cannot perform %s while tool fallback workflow generation %s "
+            "is %s" % (
+                operation, checkpoint.generation, checkpoint.stage))
 
     def _authorize_explicit_tool_state(
             self, gcmd, physical_tool, command_name):
@@ -757,6 +803,7 @@ class ToolFallback:
                 "Unable to persist tool fallback mappings: %s" % (error,))
 
     def _transition_active_route(self, gcmd, candidate):
+        self._guard_workflow_operation(gcmd.error, "active route transition")
         if self._transition_active:
             raise gcmd.error("Another tool fallback transition is active")
         logical_tool = self._active_logical_tool

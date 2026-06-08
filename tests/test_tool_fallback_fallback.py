@@ -3,6 +3,7 @@ import pytest
 from conftest import (CommandError, FakeFilamentSensor, FakeGCmd, FakePrintStats,
                       FakeSnapshotSequence)
 from klippy.extras import tool_fallback
+from klippy.extras.tool_fallback import GraphResolution, WorkflowCheckpoint
 from klippy.extras.tool_fallback import resolve_backup_graph
 from klippy.extras.tool_fallback_state import FallbackState, StateStore
 
@@ -100,6 +101,35 @@ def test_ownership_requires_explicit_claim_selected_tool_and_paused_state(
     assert checkpoint.pause_owned is False
 
 
+def test_ownership_claim_without_selected_active_job_creates_no_checkpoint(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    printer.add_object("print_stats", FakePrintStats("paused"))
+    extension, sensors = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    sensors["T0"].filament_detected = False
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+
+    assert extension._workflow_checkpoint is None
+
+
+def test_ownership_claim_requires_active_job_context_even_when_selected(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    printer.add_object("print_stats", FakePrintStats("standby"))
+    extension, sensors = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    extension._selected_physical_tool = "T0"
+    sensors["T0"].filament_detected = False
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+
+    assert extension._workflow_checkpoint is None
+
+
 def test_owned_transient_recovery_resumes_once_after_confirmed_reinsertion(
         config_factory, prefix_config_factory, printer, tmp_path):
     printer.add_object("print_stats", FakePrintStats("paused"))
@@ -158,6 +188,44 @@ def test_confirmed_runout_persists_failure_before_handoff(
 
     assert observed == [(False, True, "confirmed_runout")]
     assert extension._workflow_checkpoint.stage == "confirmed_runout"
+
+
+def test_failed_runout_persistence_error_prevents_coordinator_handoff(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    printer.add_object("print_stats", FakePrintStats("paused"))
+    extension, sensors = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    handoffs = []
+
+    def fail_persistence(candidate):
+        raise OSError("injected runout persistence failure")
+
+    monkeypatch.setattr(extension, "_persist_state", fail_persistence)
+    monkeypatch.setattr(
+        extension, "_on_confirmed_runout", handoffs.append)
+    begin_runout(printer, extension, sensors["T0"])
+
+    with pytest.raises(OSError, match="runout persistence failure"):
+        printer.reactor.advance(1.0)
+
+    assert handoffs == []
+    assert extension._workflow_checkpoint.stage == "debouncing"
+    assert extension.state.tools["T0"].failed is False
+
+
+def test_unavailable_sensor_runout_never_creates_workflow_checkpoint(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    printer.add_object("print_stats", FakePrintStats("paused"))
+    extension, _ = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        sensors=False)
+    extension._selected_physical_tool = "T0"
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+
+    assert extension._workflow_checkpoint is None
 
 
 def test_conflicting_runout_does_not_replace_active_pending_workflow(
@@ -287,3 +355,98 @@ def test_rescan_orchestration_stops_after_exactly_two_exhausted_scans(
     assert result.evaluated == ("T1",)
     assert result.unloaded == ("T1",)
     assert snapshots.calls == 2
+
+
+def test_checkpoint_status_is_json_safe_and_runtime_only(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension, _ = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        sensors=False)
+    graph = GraphResolution(
+        candidate="T0",
+        evaluated=("T0",),
+        unloaded=(),
+        failed=(),
+        looped=(),
+        unknown_authority_eligible=("T0",),
+    )
+    extension._workflow_checkpoint = WorkflowCheckpoint(
+        source="automatic_fallback",
+        stage="resolving",
+        generation=4,
+        logical_tool="T0",
+        current_physical_tool="T1",
+        requested_physical_tool="T0",
+        pause_owned=True,
+        target_temperature=220.0,
+        stage_deadline=12.5,
+        graph_report=graph,
+        failure_reason=None,
+    )
+
+    status = extension.get_status(0.0)
+
+    encoded = __import__("json").dumps(status, sort_keys=True)
+    assert status["workflow"]["graph_report"] == graph.to_dict()
+    assert "timer" not in encoded
+    assert "WorkflowCheckpoint" not in encoded
+    assert "workflow" not in extension.state.to_dict()
+
+
+@pytest.mark.parametrize(("command", "params"), [
+    ("SELECT_PHYSICAL_TOOL", {"TOOL": "T1"}),
+    ("REMAP_TOOL", {"LOGICAL": "T1", "PHYSICAL": "T0"}),
+    ("RESTORE_TOOL", {"TOOL": "T1"}),
+    ("RESET_TOOL_MAPPINGS", {}),
+    ("T1", {}),
+])
+def test_checkpoint_conflict_guards_block_physical_mapping_and_logical_changes(
+        command, params, config_factory, prefix_config_factory, printer, tmp_path):
+    states = {"T0": tool_state(), "T1": tool_state()}
+    extension, _ = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        states, sensors=False)
+    checkpoint = WorkflowCheckpoint(
+        source="automatic_fallback",
+        stage="blocked",
+        generation=7,
+        current_physical_tool="T0",
+        failure_reason="injected",
+    )
+    extension._workflow_checkpoint = checkpoint
+
+    with pytest.raises(CommandError, match="workflow generation 7 is blocked"):
+        printer.gcode.invoke_command(command, FakeGCmd(params))
+
+    assert extension._workflow_checkpoint is checkpoint
+    assert extension.state.mappings == {"T0": "T0", "T1": "T1"}
+
+
+def test_stale_generation_or_stage_cannot_advance_active_checkpoint(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension, _ = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        sensors=False)
+    checkpoint = WorkflowCheckpoint(
+        source="automatic_fallback",
+        stage="heating",
+        generation=9,
+        current_physical_tool="T0",
+    )
+    extension._workflow_checkpoint = checkpoint
+
+    assert extension._advance_workflow_checkpoint(
+        8, "heating", "purging") is None
+    assert extension._advance_workflow_checkpoint(
+        9, "selecting", "purging") is None
+    assert extension._workflow_checkpoint is checkpoint
+
+
+def test_fake_workflow_event_recorder_preserves_order(printer):
+    printer.gcode.record_workflow_event("persist", tool="T0")
+    printer.gcode.record_workflow_event("handoff", stage="confirmed_runout")
+
+    assert printer.gcode.workflow_events == [
+        ("persist", {"tool": "T0"}),
+        ("handoff", {"stage": "confirmed_runout"}),
+    ]
