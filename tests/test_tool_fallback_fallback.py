@@ -1,7 +1,7 @@
 import pytest
 
-from conftest import (CommandError, FakeFilamentSensor, FakeGCmd, FakePrintStats,
-                      FakeSnapshotSequence)
+from conftest import (CommandError, ConfigError, FakeFilamentSensor, FakeGCmd,
+                      FakeHeater, FakePrintStats, FakeSnapshotSequence)
 from klippy.extras import tool_fallback
 from klippy.extras.tool_fallback import GraphResolution, WorkflowCheckpoint
 from klippy.extras.tool_fallback import resolve_backup_graph
@@ -18,7 +18,7 @@ def tool_state(loaded=True, purged=True, failed=False, backups=()):
 
 
 def load_extension(config_factory, prefix_config_factory, printer, state_path,
-                   tool_states=None, sensors=True):
+                   tool_states=None, sensors=True, heater_names=None):
     tool_states = tool_states or {"T0": tool_state()}
     StateStore(str(state_path)).save(FallbackState.from_dict({
         "version": 1,
@@ -31,7 +31,9 @@ def load_extension(config_factory, prefix_config_factory, printer, state_path,
     sensor_objects = {}
     for name in tool_states:
         printer.gcode.register_command(name, lambda gcmd: None)
-        options = {"heater": "extruder"}
+        options = {
+            "heater": (heater_names or {}).get(name, "extruder"),
+        }
         if sensors:
             sensor_name = "filament_switch_sensor %s_sensor" % name.lower()
             sensor = FakeFilamentSensor(
@@ -47,6 +49,21 @@ def load_extension(config_factory, prefix_config_factory, printer, state_path,
     if sensors:
         printer.reactor.advance(1.0)
     return extension, sensor_objects
+
+
+def stage_checkpoint(extension, source="T0", requested="T1"):
+    extension._workflow_generation += 1
+    checkpoint = WorkflowCheckpoint(
+        source="manual_route",
+        stage="capturing_target",
+        generation=extension._workflow_generation,
+        logical_tool="T0",
+        current_physical_tool=source,
+        requested_physical_tool=requested,
+        pause_owned=True,
+    )
+    extension._workflow_checkpoint = checkpoint
+    return checkpoint
 
 
 def begin_runout(printer, extension, sensor, pause_owned="1"):
@@ -65,6 +82,74 @@ def fallback_state(tool_states):
         "tools": tool_states,
         "mappings": {name: name for name in tool_states},
     })
+
+
+def test_configured_missing_heater_fails_ready_with_tool_and_heater_context(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    del printer.heaters.heaters["extruder"]
+
+    with pytest.raises(ConfigError, match="T0 heater 'extruder'.*unavailable"):
+        load_extension(
+            config_factory, prefix_config_factory, printer,
+            tmp_path / "state.json")
+
+
+@pytest.mark.parametrize("target", [0.0, -1.0, float("nan"), float("inf")])
+def test_invalid_source_target_blocks_before_shutdown_or_preheat(
+        target, config_factory, prefix_config_factory, printer, tmp_path):
+    extension, _ = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        {"T0": tool_state(), "T1": tool_state()})
+    printer.heaters.heaters["extruder"].target = target
+    checkpoint = stage_checkpoint(extension)
+    printer.heaters.events.clear()
+
+    blocked = extension._capture_and_shutdown_source(checkpoint)
+
+    assert blocked.stage == "blocked"
+    assert "target must be finite and above 0.0" in blocked.failure_reason
+    assert not any(event[0] == "set_temperature"
+                   for event in printer.heaters.events)
+    assert extension._selected_physical_tool is None
+
+
+def test_valid_source_target_is_captured_shutdown_then_preheated_exactly(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    source = printer.heaters.heaters["extruder"]
+    source.target = 237.5
+    destination = printer.heaters.add_heater(FakeHeater(
+        "extruder1", target=0.0, ready=False, events=printer.heaters.events))
+    extension, _ = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        {"T0": tool_state(), "T1": tool_state()},
+        heater_names={"T0": "extruder", "T1": "extruder1"})
+    checkpoint = stage_checkpoint(extension)
+    printer.heaters.events.clear()
+
+    shutdown = extension._capture_and_shutdown_source(checkpoint)
+    preheated = extension._preheat_requested_tool(shutdown)
+
+    assert shutdown.target_temperature == 237.5
+    assert preheated.stage == "preheated"
+    assert source.target == 0.0
+    assert destination.target == 237.5
+    assert printer.heaters.events == [
+        ("heater_status", "extruder", printer.reactor.monotonic()),
+        ("set_temperature", "extruder", 0.0, False),
+        ("set_temperature", "extruder1", 237.5, False),
+    ]
+
+
+def test_heater_objects_and_runtime_readings_are_not_in_status_or_persistence(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension, _ = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    status = extension.get_status(None)
+
+    assert "heaters" not in status
+    assert "temperature" not in status["tools"]["T0"]
+    assert "heater" not in StateStore(str(tmp_path / "state.json")).load().to_dict()
+    assert "FakeHeater" not in repr(status)
 
 
 def test_PAUSE_OWNED_parsing_is_strict(

@@ -1,4 +1,5 @@
 import json
+import math
 from dataclasses import asdict
 from dataclasses import dataclass
 from dataclasses import replace
@@ -131,6 +132,7 @@ class ToolFallback:
         self._selected_physical_tool = None
         self._transition_active = False
         self._sensor_runtime = {}
+        self._heaters = {}
         self._workflow_checkpoint = None
         self._workflow_generation = 0
         self.printer.register_event_handler(
@@ -293,6 +295,7 @@ class ToolFallback:
         physical_handlers = None
         try:
             state = store.load_reconciled(normalized.tools)
+            heaters = self._resolve_heaters(normalized.tools)
             physical_handlers = self._capture_physical_handlers(
                 normalized.tools)
             self._install_logical_handlers(normalized.tools)
@@ -311,7 +314,20 @@ class ToolFallback:
         self._state_store = store
         self.state = state
         self._physical_handlers = MappingProxyType(physical_handlers)
+        self._heaters = MappingProxyType(heaters)
         self._initialize_sensor_runtime(normalized.tools)
+
+    def _resolve_heaters(self, tools):
+        manager = self.printer.lookup_object("heaters")
+        heaters = {}
+        for tool, tool_config in tools.items():
+            try:
+                heaters[tool] = manager.lookup_heater(tool_config.heater)
+            except Exception as error:
+                raise self._config_error(
+                    "Configured tool %s heater '%s' is unavailable: %s" %
+                    (tool, tool_config.heater, error))
+        return heaters
 
     def _capture_physical_handlers(self, tools):
         handlers = {}
@@ -389,6 +405,68 @@ class ToolFallback:
     def _persist_state(self, candidate):
         self._state_store.save(candidate)
         self.state = candidate
+
+    def _block_workflow(self, checkpoint, reason):
+        blocked = replace(
+            checkpoint, stage="blocked", stage_deadline=None,
+            failure_reason=reason)
+        self._workflow_checkpoint = blocked
+        self.gcode.respond_info(reason)
+        return blocked
+
+    def _capture_and_shutdown_source(self, checkpoint):
+        source = checkpoint.current_physical_tool
+        heater = self._heaters.get(source)
+        if heater is None:
+            return self._block_workflow(
+                checkpoint, "Tool %s has no resolved source heater" % source)
+        eventtime = self.printer.get_reactor().monotonic()
+        try:
+            unused_temperature, target = heater.get_temp(eventtime)
+        except Exception as error:
+            return self._block_workflow(
+                checkpoint, "Unable to read tool %s source heater target: %s" %
+                (source, error))
+        if (not isinstance(target, (int, float))
+                or isinstance(target, bool)
+                or not math.isfinite(target)
+                or target <= 0.0):
+            return self._block_workflow(
+                checkpoint,
+                "Tool %s source heater target must be finite and above 0.0; "
+                "got %r" % (source, target))
+        try:
+            self.printer.lookup_object("heaters").set_temperature(
+                heater, 0.0, wait=False)
+        except Exception as error:
+            return self._block_workflow(
+                checkpoint, "Unable to disable tool %s source heater: %s" %
+                (source, error))
+        advanced = replace(
+            checkpoint, stage="source_shutdown",
+            target_temperature=float(target), failure_reason=None)
+        self._workflow_checkpoint = advanced
+        return advanced
+
+    def _preheat_requested_tool(self, checkpoint):
+        requested = checkpoint.requested_physical_tool
+        target = checkpoint.target_temperature
+        heater = self._heaters.get(requested)
+        if heater is None:
+            return self._block_workflow(
+                checkpoint, "Tool %s has no resolved destination heater" %
+                requested)
+        try:
+            self.printer.lookup_object("heaters").set_temperature(
+                heater, target, wait=False)
+        except Exception as error:
+            return self._block_workflow(
+                checkpoint, "Unable to preheat tool %s: %s" %
+                (requested, error))
+        advanced = replace(
+            checkpoint, stage="preheated", failure_reason=None)
+        self._workflow_checkpoint = advanced
+        return advanced
 
     def _initialize_sensor_runtime(self, tools):
         self._sensor_runtime = {
