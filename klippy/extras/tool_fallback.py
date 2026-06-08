@@ -25,6 +25,8 @@ class SensorRuntime:
     debounce_origin: object = None
     pending_runout_context: bool = False
     outage_acknowledged: bool = False
+    outage_pause_suppressed: bool = False
+    outage_pause_pending: bool = False
     poll_timer: object = None
 
 
@@ -221,6 +223,12 @@ class ToolFallback:
         self._active_logical_tool = logical_tool
 
     def _select_physical(self, physical_tool):
+        runtime = self._sensor_runtime.get(physical_tool)
+        if runtime is not None and runtime.authority == "unknown":
+            self.gcode.respond_info(
+                "Tool %s sensor authority is unknown; selection will "
+                "continue but sensor-triggered fallback is unavailable" %
+                (physical_tool,))
         handler = self._physical_handlers[physical_tool]
         physical_gcmd = self.gcode.create_gcode_command(
             physical_tool, physical_tool, {})
@@ -266,7 +274,7 @@ class ToolFallback:
             target = runtime.debounce_target
             status = self._read_sensor_status(runtime, eventtime)
             if status is None or not status["enabled"]:
-                self._set_sensor_unknown(runtime)
+                self._set_sensor_unknown(tool, runtime)
                 return self.printer.get_reactor().NEVER
             runtime.enabled = status["enabled"]
             runtime.detected = status["filament_detected"]
@@ -279,6 +287,9 @@ class ToolFallback:
                 self._persist_state(candidate)
             runtime.authority = "available"
             runtime.confirmed_detected = target
+            runtime.outage_acknowledged = False
+            runtime.outage_pause_suppressed = False
+            runtime.outage_pause_pending = False
             runtime.debounce_target = None
             runtime.debounce_deadline = None
             runtime.debounce_origin = None
@@ -305,7 +316,7 @@ class ToolFallback:
             else:
                 runtime.enabled = status["enabled"]
                 runtime.detected = status["filament_detected"]
-            self._set_sensor_unknown(runtime)
+            self._set_sensor_unknown(tool, runtime)
             return
         self._observe_sensor_reading(tool, status, eventtime, None)
 
@@ -337,7 +348,8 @@ class ToolFallback:
         self.printer.get_reactor().update_timer(
             runtime.debounce_timer, runtime.debounce_deadline)
 
-    def _set_sensor_unknown(self, runtime):
+    def _set_sensor_unknown(self, tool, runtime):
+        newly_unknown = runtime.authority == "available"
         runtime.authority = "unknown"
         runtime.confirmed_detected = None
         runtime.debounce_target = None
@@ -348,13 +360,41 @@ class ToolFallback:
         if runtime.debounce_timer is not None:
             self.printer.get_reactor().update_timer(
                 runtime.debounce_timer, self.printer.get_reactor().NEVER)
+        if newly_unknown:
+            self.gcode.respond_info(
+                "Tool %s sensor authority became unknown; sensor-triggered "
+                "fallback is unavailable until authority is restored" %
+                (tool,))
+            if tool == self._selected_physical_tool:
+                print_state = self._get_print_state()
+                runtime.outage_pause_suppressed = print_state == "paused"
+                runtime.outage_pause_pending = print_state == "printing"
+        self._handle_selected_sensor_outage(tool, runtime)
+
+    def _handle_selected_sensor_outage(self, tool, runtime):
+        if (not runtime.outage_pause_pending
+                or tool != self._selected_physical_tool
+                or runtime.outage_acknowledged
+                or runtime.outage_pause_suppressed
+                or self._get_print_state() != "printing"):
+            return
+        try:
+            self.gcode.run_script_from_command(
+                self.config.global_config.pause_gcode)
+        except Exception as error:
+            self.gcode.respond_info(
+                "Unable to pause after tool %s sensor authority loss: %s" %
+                (tool, error))
+            return
+        runtime.outage_acknowledged = True
+        runtime.outage_pause_pending = False
 
     def _record_sensor_event(self, tool, detected):
         runtime = self._sensor_runtime[tool]
         eventtime = self.printer.get_reactor().monotonic()
         status = self._read_sensor_status(runtime, eventtime)
         if status is None or not status["enabled"]:
-            self._set_sensor_unknown(runtime)
+            self._set_sensor_unknown(tool, runtime)
             return
         if status["filament_detected"] != detected:
             self._observe_sensor_reading(tool, status, eventtime, None)

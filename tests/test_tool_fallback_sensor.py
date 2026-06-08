@@ -537,3 +537,136 @@ def test_SET_TOOL_FILAMENT_STATE_authorization_and_state_semantics(
     assert extension.state.tools["T0"].purged is False
     assert extension.state.tools["T0"].failed is False
     assert printer.gcode.script_events == []
+
+
+def test_selected_sensor_outage_warns_and_pauses_once_without_changing_state(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    path = tmp_path / "state.json"
+    persist_state(path, {
+        "T0": {
+            "loaded": True,
+            "purged": True,
+            "failed": False,
+            "backups": [],
+        },
+    })
+    sensor = FakeFilamentSensor(enabled=True, filament_detected=True)
+    printer.add_object("filament_switch_sensor tool_sensor", sensor)
+    printer.add_object("print_stats", FakePrintStats("printing"))
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, path)
+    printer.send_event("klippy:ready")
+    printer.reactor.advance(1.0)
+    extension._selected_physical_tool = "T0"
+    original = extension.state
+
+    sensor.enabled = False
+    printer.reactor.advance(0.25)
+    printer.reactor.advance(1.0)
+
+    status = extension.get_status(printer.reactor.monotonic())
+    assert status["sensor_authority"]["T0"]["authority"] == "unknown"
+    assert status["sensor_authority"]["T0"]["outage_acknowledged"] is True
+    assert extension.state is original
+    assert printer.gcode.script_events == ["PAUSE"]
+    assert any("T0 sensor authority became unknown" in message
+               for message in printer.gcode.responses)
+
+
+def test_selected_sensor_outage_pause_failure_retries_without_acknowledging(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    sensor = FakeFilamentSensor(enabled=True, filament_detected=True)
+    printer.add_object("filament_switch_sensor tool_sensor", sensor)
+    printer.add_object("print_stats", FakePrintStats("printing"))
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    printer.reactor.advance(1.0)
+    extension._selected_physical_tool = "T0"
+    printer.gcode.inject_script_failure(
+        "PAUSE", CommandError("injected outage pause failure"))
+
+    sensor.enabled = False
+    printer.reactor.advance(0.25)
+    assert extension._sensor_runtime["T0"].outage_acknowledged is False
+    assert printer.gcode.script_events == ["PAUSE"]
+
+    del printer.gcode.script_failures["PAUSE"]
+    printer.reactor.advance(0.25)
+    assert extension._sensor_runtime["T0"].outage_acknowledged is True
+    assert printer.gcode.script_events == ["PAUSE", "PAUSE"]
+
+
+def test_inactive_and_preexisting_unknown_sensor_never_pause_but_select_warns(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    sensor = FakeFilamentSensor(enabled=True, filament_detected=True)
+    printer.add_object("filament_switch_sensor tool_sensor", sensor)
+    printer.add_object("print_stats", FakePrintStats("printing"))
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        tools=(
+            ("T0", {}),
+            ("T1", {"filament_sensor": None}),
+        ))
+    printer.send_event("klippy:ready")
+    printer.reactor.advance(1.0)
+    extension._selected_physical_tool = "T1"
+    original = extension.state
+
+    sensor.enabled = False
+    printer.reactor.advance(0.25)
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT", FakeGCmd({"TOOL": "T1"}))
+    extension._select_physical("T1")
+    printer.reactor.advance(0.5)
+
+    assert printer.gcode.script_events == []
+    assert extension.state is original
+    assert any("Tool T1 sensor authority is unknown" in message
+               for message in printer.gcode.responses)
+
+
+def test_user_paused_selected_sensor_outage_does_not_claim_pause_or_repeat(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    sensor = FakeFilamentSensor(enabled=True, filament_detected=True)
+    printer.add_object("filament_switch_sensor tool_sensor", sensor)
+    print_stats = FakePrintStats("paused")
+    printer.add_object("print_stats", print_stats)
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    printer.reactor.advance(1.0)
+    extension._selected_physical_tool = "T0"
+
+    sensor.enabled = False
+    printer.reactor.advance(0.25)
+    print_stats.set_state("printing")
+    printer.reactor.advance(0.5)
+
+    assert printer.gcode.script_events == []
+    assert extension._sensor_runtime["T0"].outage_acknowledged is False
+
+
+def test_reenabled_sensor_restores_authority_and_clears_ack_after_debounce(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    sensor = FakeFilamentSensor(enabled=True, filament_detected=True)
+    printer.add_object("filament_switch_sensor tool_sensor", sensor)
+    printer.add_object("print_stats", FakePrintStats("printing"))
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    printer.reactor.advance(1.0)
+    extension._selected_physical_tool = "T0"
+
+    sensor.enabled = False
+    printer.reactor.advance(0.25)
+    assert extension._sensor_runtime["T0"].outage_acknowledged is True
+
+    sensor.enabled = True
+    printer.reactor.advance(1.24)
+    assert extension._sensor_runtime["T0"].authority == "unknown"
+    assert extension._sensor_runtime["T0"].outage_acknowledged is True
+
+    printer.reactor.advance(0.01)
+    assert extension._sensor_runtime["T0"].authority == "available"
+    assert extension._sensor_runtime["T0"].outage_acknowledged is False
