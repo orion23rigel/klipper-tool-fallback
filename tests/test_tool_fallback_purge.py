@@ -178,3 +178,110 @@ def test_unrelated_scripts_and_manual_extrusion_never_change_purge_state(
     printer.gcode.run_script_from_command("UNRELATED_MACRO")
 
     assert extension.state.tools["T0"].purged is False
+
+
+def test_ordinary_active_logical_selection_conditionally_purges_in_order(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        {"T0": tool_state()})
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    printer.gcode.invoke_command("T0", FakeGCmd())
+
+    assert printer.gcode.script_events == [
+        "PAUSE", "_TOOL_FALLBACK_PURGE TOOL=T0", "RESUME",
+    ]
+    assert extension.state.tools["T0"].purged is True
+    assert extension._active_logical_tool == "T0"
+    assert extension._selected_physical_tool == "T0"
+
+
+def test_ordinary_already_paused_selection_purges_without_resume(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        {"T0": tool_state()})
+    printer.add_object("print_stats", FakePrintStats("paused"))
+
+    printer.gcode.invoke_command("T0", FakeGCmd())
+
+    assert printer.gcode.script_events == ["_TOOL_FALLBACK_PURGE TOOL=T0"]
+    assert extension.state.tools["T0"].purged is True
+
+
+def test_ordinary_outside_print_selection_reports_unpurged_without_purge(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        {"T0": tool_state()})
+    gcmd = FakeGCmd()
+
+    printer.gcode.invoke_command("T0", gcmd)
+
+    assert printer.gcode.script_events == []
+    assert extension.state.tools["T0"].purged is False
+    assert any("remains unpurged outside an active print" in response
+               for response in gcmd.responses)
+    assert extension._active_logical_tool == "T0"
+
+
+def test_ordinary_already_purged_active_selection_uses_direct_fast_path(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        {"T0": tool_state(loaded=True, purged=True)})
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    printer.gcode.invoke_command("T0", FakeGCmd())
+
+    assert printer.gcode.script_events == []
+    assert extension._active_logical_tool == "T0"
+
+
+@pytest.mark.parametrize("failure_script", [
+    "_TOOL_FALLBACK_PURGE TOOL=T0",
+    "RESUME",
+])
+def test_ordinary_conditional_purge_failure_never_publishes_logical_completion(
+        failure_script, config_factory, prefix_config_factory, printer,
+        tmp_path):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        {"T0": tool_state()})
+    print_stats = FakePrintStats("printing")
+    printer.add_object("print_stats", print_stats)
+    printer.gcode.inject_script_failure(
+        failure_script, CommandError("ordinary selection failure"))
+
+    with pytest.raises(CommandError, match="ordinary selection failure"):
+        printer.gcode.invoke_command("T0", FakeGCmd())
+
+    assert print_stats.state == "paused"
+    assert extension._active_logical_tool is None
+    assert extension._selected_physical_tool == "T0"
+    if failure_script.startswith("_TOOL_FALLBACK_PURGE"):
+        assert extension.state.tools["T0"].purged is False
+        assert printer.gcode.script_events == [
+            "PAUSE", "_TOOL_FALLBACK_PURGE TOOL=T0",
+        ]
+    else:
+        assert extension.state.tools["T0"].purged is True
+        assert printer.gcode.script_events == [
+            "PAUSE", "_TOOL_FALLBACK_PURGE TOOL=T0", "RESUME",
+        ]
+
+
+def test_ordinary_unknown_authority_selection_warns_and_purges(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        {"T0": tool_state(loaded=False)})
+    printer.add_object("print_stats", FakePrintStats("printing"))
+    gcmd = FakeGCmd()
+
+    printer.gcode.invoke_command("T0", gcmd)
+
+    assert any("sensor authority is unknown" in response
+               for response in gcmd.responses)
+    assert extension.state.tools["T0"].purged is True

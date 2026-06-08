@@ -249,8 +249,32 @@ class ToolFallback:
                 "Cannot select logical tool %s during an active transition" %
                 (logical_tool,))
         physical_tool = self.state.mappings[logical_tool]
-        self._select_physical(physical_tool)
+        self._select_and_conditionally_purge(
+            physical_tool, gcmd.error, gcmd.respond_info)
         self._active_logical_tool = logical_tool
+
+    def _select_and_conditionally_purge(
+            self, physical_tool, error_factory, respond_info,
+            already_guarded=False):
+        print_state = self._get_print_state()
+        needs_purge = not self.state.tools[physical_tool].purged
+        owns_pause = False
+        if needs_purge and print_state == "printing" and not already_guarded:
+            self.gcode.run_script_from_command(
+                self.config.global_config.pause_gcode)
+            owns_pause = True
+        self._select_physical(physical_tool)
+        if needs_purge:
+            if print_state in ("printing", "paused"):
+                self._purge_physical_tool(
+                    physical_tool, error_factory, respond_info)
+            else:
+                respond_info(
+                    "Tool %s is selected but remains unpurged outside an "
+                    "active print" % (physical_tool,))
+        if owns_pause:
+            self.gcode.run_script_from_command(
+                self.config.global_config.resume_gcode)
 
     def _select_physical(self, physical_tool):
         runtime = self._sensor_runtime.get(physical_tool)
