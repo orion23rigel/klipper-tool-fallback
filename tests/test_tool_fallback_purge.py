@@ -54,6 +54,23 @@ def test_PURGE_TOOL_invokes_distinct_adapter_once_and_publishes_after_success(
     assert printer.gcode.commands["PURGE_TOOL"] == extension.cmd_PURGE_TOOL
 
 
+def test_PURGE_TOOL_explicitly_repurges_an_already_purged_tool_once(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        {"T0": tool_state(loaded=True, purged=True)})
+
+    def reject_save(candidate):
+        raise AssertionError("already-purged explicit purge attempted persistence")
+
+    monkeypatch.setattr(extension._state_store, "save", reject_save)
+
+    printer.gcode.invoke_command("PURGE_TOOL", FakeGCmd({"TOOL": "T0"}))
+
+    assert printer.gcode.script_events == ["_TOOL_FALLBACK_PURGE TOOL=T0"]
+    assert extension.state.tools["T0"].purged is True
+
+
 def test_PURGE_TOOL_adapter_failure_leaves_tool_unpurged(
         config_factory, prefix_config_factory, printer, tmp_path):
     extension = load_extension(

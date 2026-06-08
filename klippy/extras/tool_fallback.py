@@ -173,7 +173,7 @@ class ToolFallback:
     def cmd_PURGE_TOOL(self, gcmd):
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
         self._purge_physical_tool(
-            physical_tool, gcmd.error, gcmd.respond_info)
+            physical_tool, gcmd.error, gcmd.respond_info, force=True)
 
     def cmd_MARK_TOOL_PURGED(self, gcmd):
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
@@ -466,14 +466,17 @@ class ToolFallback:
                 "only available while paused or outside a print" %
                 (command_name, physical_tool))
 
-    def _purge_physical_tool(self, physical_tool, error_factory, respond_info):
+    def _purge_physical_tool(
+            self, physical_tool, error_factory, respond_info, force=False):
         self._warn_unknown_purge_authority(physical_tool, respond_info)
         candidate = self._purged_candidate(physical_tool, error_factory)
-        if candidate is self.state:
+        if candidate is self.state and not force:
             return
         adapter = "%s TOOL=%s" % (
             self.config.global_config.purge_gcode, physical_tool)
         self.gcode.run_script_from_command(adapter)
+        if candidate is self.state:
+            return
         try:
             self._persist_state(candidate)
         except OSError as error:
