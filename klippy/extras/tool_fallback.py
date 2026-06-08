@@ -645,9 +645,6 @@ class ToolFallback:
             if self.state.mappings.get(
                     self._active_logical_tool) == physical_tool:
                 return self._active_logical_tool
-        for logical_tool, mapped_physical in self.state.mappings.items():
-            if mapped_physical == physical_tool:
-                return logical_tool
         return None
 
     def _resolve_backup_with_rescan(self, failed_tool, snapshot_provider=None):

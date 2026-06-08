@@ -130,6 +130,21 @@ def test_ownership_claim_requires_active_job_context_even_when_selected(
     assert extension._workflow_checkpoint is None
 
 
+def test_pending_runout_never_guesses_unknown_active_logical_route(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    printer.add_object("print_stats", FakePrintStats("paused"))
+    extension, sensors = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    extension._selected_physical_tool = "T0"
+    sensors["T0"].filament_detected = False
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+
+    assert extension._workflow_checkpoint.logical_tool is None
+
+
 def test_owned_transient_recovery_resumes_once_after_confirmed_reinsertion(
         config_factory, prefix_config_factory, printer, tmp_path):
     printer.add_object("print_stats", FakePrintStats("paused"))
