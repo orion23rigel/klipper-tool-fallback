@@ -91,6 +91,14 @@ def persist_mapping(path, physical_tool):
     state_module.StateStore(str(path)).save(state)
 
 
+def mark_all_tools_purged(extension):
+    candidate = extension.state
+    for name in candidate.tools:
+        candidate = candidate.with_filament_loaded(name)
+        candidate = candidate.with_tool_purged(name)
+    extension._persist_state(candidate)
+
+
 def test_synthetic_physical_command_exposes_clean_identity(printer):
     command = printer.gcode.create_gcode_command("T2", "T2", {})
 
@@ -605,6 +613,7 @@ def test_changed_active_route_commands_use_ordered_transition_during_print(
         config_factory, prefix_config_factory, printer, path, handlers=handlers)
     printer.send_event("klippy:ready")
     printer.gcode.invoke_command("T0")
+    mark_all_tools_purged(extension)
     events.clear()
     printer.add_object("print_stats", FakePrintStats("printing"))
     record_transition_scripts(printer, events)
@@ -638,6 +647,7 @@ def test_already_paused_active_transition_does_not_pause_or_resume(
         handlers=handlers)
     printer.send_event("klippy:ready")
     printer.gcode.invoke_command("T0")
+    mark_all_tools_purged(extension)
     events.clear()
     printer.add_object("print_stats", FakePrintStats("paused"))
     record_transition_scripts(printer, events)
@@ -685,6 +695,7 @@ def test_reentrant_active_transition_is_rejected_before_selection(
         handlers=handlers)
     printer.send_event("klippy:ready")
     printer.gcode.invoke_command("T0")
+    mark_all_tools_purged(extension)
     events.clear()
     printer.add_object("print_stats", FakePrintStats("printing"))
     original_pause = printer.gcode.run_script_from_command
@@ -716,6 +727,7 @@ def test_inactive_route_change_persists_during_active_print(
         handlers=handlers)
     printer.send_event("klippy:ready")
     printer.gcode.invoke_command("T0")
+    mark_all_tools_purged(extension)
     events.clear()
     printer.add_object("print_stats", FakePrintStats("printing"))
 
@@ -761,6 +773,7 @@ def test_active_transition_pause_failure_prevents_warning_selection_and_save(
         handlers=handlers)
     printer.send_event("klippy:ready")
     printer.gcode.invoke_command("T0")
+    mark_all_tools_purged(extension)
     events.clear()
     original = extension.state
     printer.add_object("print_stats", FakePrintStats("printing"))
@@ -797,6 +810,7 @@ def test_active_transition_selection_failure_preserves_state_and_stays_paused(
         handlers=handlers)
     printer.send_event("klippy:ready")
     printer.gcode.invoke_command("T0")
+    mark_all_tools_purged(extension)
     events.clear()
     original = extension.state
     print_stats = FakePrintStats("printing")
@@ -831,6 +845,7 @@ def test_active_transition_persistence_failure_rolls_back_and_stays_paused(
         handlers=handlers)
     printer.send_event("klippy:ready")
     printer.gcode.invoke_command("T0")
+    mark_all_tools_purged(extension)
     events.clear()
     original = extension.state
     print_stats = FakePrintStats("printing")
@@ -874,6 +889,7 @@ def test_active_transition_rollback_failure_reports_both_causes(
         handlers=handlers)
     printer.send_event("klippy:ready")
     printer.gcode.invoke_command("T0")
+    mark_all_tools_purged(extension)
     events.clear()
     original = extension.state
     print_stats = FakePrintStats("printing")
@@ -908,6 +924,7 @@ def test_active_transition_resume_failure_surfaces_and_stays_paused(
         handlers=handlers)
     printer.send_event("klippy:ready")
     printer.gcode.invoke_command("T0")
+    mark_all_tools_purged(extension)
     print_stats = FakePrintStats("printing")
     printer.add_object("print_stats", print_stats)
     printer.gcode.inject_script_failure(
@@ -938,6 +955,7 @@ def test_active_reset_failure_preserves_all_prior_mappings_atomically(
     printer.gcode.invoke_command(
         "REMAP_TOOL", FakeGCmd({"LOGICAL": "T1", "PHYSICAL": "T2"}))
     printer.gcode.invoke_command("T0")
+    mark_all_tools_purged(extension)
     original = extension.state
     printer.add_object("print_stats", FakePrintStats("printing"))
 

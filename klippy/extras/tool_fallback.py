@@ -581,7 +581,8 @@ class ToolFallback:
                 logical_tool, current_physical, requested_physical)
             self._select_physical(requested_physical)
             self._run_post_selection_transition_stages(
-                logical_tool, current_physical, requested_physical)
+                gcmd, logical_tool, current_physical, requested_physical)
+            candidate = self._merge_mapping_candidate(candidate)
             try:
                 self._persist_state(candidate)
             except OSError as persist_error:
@@ -608,9 +609,16 @@ class ToolFallback:
         pass
 
     def _run_post_selection_transition_stages(
-            self, logical_tool, current_physical, requested_physical):
-        # Phase 3 integrates conditional purge here.
-        pass
+            self, gcmd, logical_tool, current_physical, requested_physical):
+        if not self.state.tools[requested_physical].purged:
+            self._purge_physical_tool(
+                requested_physical, gcmd.error, gcmd.respond_info)
+
+    def _merge_mapping_candidate(self, requested_candidate):
+        candidate = self.state
+        for logical_tool, physical_tool in requested_candidate.mappings.items():
+            candidate = candidate.with_mapping(logical_tool, physical_tool)
+        return candidate
 
     def _require_configured_tool(self, gcmd, parameter):
         if self.config is None or self._physical_handlers is None:

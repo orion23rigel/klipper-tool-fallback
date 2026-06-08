@@ -6,19 +6,21 @@ from klippy.extras.tool_fallback_state import FallbackState, StateStore
 
 
 def load_extension(config_factory, prefix_config_factory, printer, state_path,
-                   tool_states=None, sensor=None):
+                   tool_states=None, sensor=None, mappings=None,
+                   handlers=None):
     if tool_states is not None:
         StateStore(str(state_path)).save(FallbackState.from_dict({
             "version": 1,
             "tools": tool_states,
-            "mappings": {name: name for name in tool_states},
+            "mappings": mappings or {name: name for name in tool_states},
         }))
     extension = tool_fallback.load_config(
         config_factory(state_path=str(state_path)))
     printer.add_object("tool_fallback", extension)
     names = tuple(tool_states or {"T0": None, "T1": None})
     for name in names:
-        printer.gcode.register_command(name, lambda gcmd: None)
+        printer.gcode.register_command(
+            name, (handlers or {}).get(name, lambda gcmd: None))
         options = {"heater": "extruder"}
         if sensor is not None:
             sensor_name = "filament_switch_sensor %s_sensor" % name.lower()
@@ -285,3 +287,86 @@ def test_ordinary_unknown_authority_selection_warns_and_purges(
     assert any("sensor authority is unknown" in response
                for response in gcmd.responses)
     assert extension.state.tools["T0"].purged is True
+
+
+def test_active_transition_reuses_pause_and_purges_before_mapping_persistence(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    events = []
+    handlers = {
+        name: (lambda tool: lambda gcmd: events.append("select:%s" % tool))(
+            name)
+        for name in ("T0", "T1")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        {"T0": tool_state(loaded=True, purged=True), "T1": tool_state()},
+        handlers=handlers)
+    printer.gcode.invoke_command("T0", FakeGCmd())
+    events.clear()
+    printer.add_object("print_stats", FakePrintStats("printing"))
+    original_script = printer.gcode.run_script_from_command
+
+    def record_script(script):
+        events.append("script:%s" % script)
+        return original_script(script)
+
+    printer.gcode.run_script_from_command = record_script
+    original_save = extension._state_store.save
+
+    def record_save(candidate):
+        events.append(
+            "persist:mapping" if candidate.mappings["T0"] == "T1"
+            else "persist:purge")
+        return original_save(candidate)
+
+    monkeypatch.setattr(extension._state_store, "save", record_save)
+
+    printer.gcode.invoke_command(
+        "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T1"}))
+
+    assert events == [
+        "script:PAUSE",
+        "select:T1",
+        "script:_TOOL_FALLBACK_PURGE TOOL=T1",
+        "persist:purge",
+        "persist:mapping",
+        "script:RESUME",
+    ]
+    assert extension.state.tools["T1"].purged is True
+    assert extension.state.mappings["T0"] == "T1"
+
+
+@pytest.mark.parametrize("failure_mode", ["adapter", "purge_persistence"])
+def test_active_transition_purge_failure_preserves_mapping_and_stays_paused(
+        failure_mode, config_factory, prefix_config_factory, printer, tmp_path,
+        monkeypatch):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        {"T0": tool_state(loaded=True, purged=True), "T1": tool_state()})
+    printer.gcode.invoke_command("T0", FakeGCmd())
+    original_mapping = extension.state.mappings["T0"]
+    printer.add_object("print_stats", FakePrintStats("printing"))
+    if failure_mode == "adapter":
+        printer.gcode.inject_script_failure(
+            "_TOOL_FALLBACK_PURGE TOOL=T1",
+            CommandError("active purge adapter failed"))
+    else:
+        original_save = extension._state_store.save
+
+        def fail_purge_save(candidate):
+            if candidate.tools["T1"].purged:
+                raise OSError("active purge persistence failed")
+            return original_save(candidate)
+
+        monkeypatch.setattr(extension._state_store, "save", fail_purge_save)
+
+    with pytest.raises(Exception, match="active purge"):
+        printer.gcode.invoke_command(
+            "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T1"}))
+
+    assert extension.state.mappings["T0"] == original_mapping
+    assert extension.state.tools["T1"].purged is False
+    assert extension._selected_physical_tool == "T1"
+    assert extension._transition_active is False
+    assert printer.objects["print_stats"].state == "paused"
+    assert "RESUME" not in printer.gcode.script_events
