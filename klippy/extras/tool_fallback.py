@@ -71,6 +71,15 @@ class ToolFallback:
         self.gcode.register_command(
             "SET_TOOL_FILAMENT_STATE", self.cmd_SET_TOOL_FILAMENT_STATE,
             desc="Set operator-owned tool fallback filament state")
+        self.gcode.register_command(
+            "PURGE_TOOL", self.cmd_PURGE_TOOL,
+            desc="Purge a physical tool and record durable purge state")
+        self.gcode.register_command(
+            "MARK_TOOL_PURGED", self.cmd_MARK_TOOL_PURGED,
+            desc="Mark a physical tool purged")
+        self.gcode.register_command(
+            "MARK_TOOL_UNPURGED", self.cmd_MARK_TOOL_UNPURGED,
+            desc="Mark a physical tool unpurged")
 
     def register_tool(self, tool):
         if tool.name in self._tools:
@@ -141,7 +150,8 @@ class ToolFallback:
     def cmd_SET_TOOL_FILAMENT_STATE(self, gcmd):
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
         loaded = gcmd.get_int("LOADED", minval=0, maxval=1) == 1
-        self._authorize_explicit_tool_state(gcmd, physical_tool)
+        self._authorize_explicit_tool_state(
+            gcmd, physical_tool, "SET_TOOL_FILAMENT_STATE")
         runtime = self._sensor_runtime.get(physical_tool)
         if runtime is not None and runtime.authority == "available":
             gcmd.respond_info(
@@ -159,6 +169,26 @@ class ToolFallback:
             raise gcmd.error(
                 "Unable to persist tool fallback filament state: %s" %
                 (error,))
+
+    def cmd_PURGE_TOOL(self, gcmd):
+        physical_tool = self._require_configured_tool(gcmd, "TOOL")
+        self._purge_physical_tool(
+            physical_tool, gcmd.error, gcmd.respond_info)
+
+    def cmd_MARK_TOOL_PURGED(self, gcmd):
+        physical_tool = self._require_configured_tool(gcmd, "TOOL")
+        self._authorize_explicit_tool_state(
+            gcmd, physical_tool, "MARK_TOOL_PURGED")
+        self._warn_unknown_purge_authority(physical_tool, gcmd.respond_info)
+        candidate = self._purged_candidate(physical_tool, gcmd.error)
+        self._persist_purge_candidate(gcmd, candidate)
+
+    def cmd_MARK_TOOL_UNPURGED(self, gcmd):
+        physical_tool = self._require_configured_tool(gcmd, "TOOL")
+        self._authorize_explicit_tool_state(
+            gcmd, physical_tool, "MARK_TOOL_UNPURGED")
+        candidate = self.state.with_tool_unpurged(physical_tool)
+        self._persist_purge_candidate(gcmd, candidate)
 
     def _handle_ready(self):
         normalized = self.finalize_configuration()
@@ -402,14 +432,58 @@ class ToolFallback:
         self._observe_sensor_reading(
             tool, status, eventtime, "insert" if detected else "runout")
 
-    def _authorize_explicit_tool_state(self, gcmd, physical_tool):
+    def _authorize_explicit_tool_state(
+            self, gcmd, physical_tool, command_name):
         print_state = self._get_print_state()
         if (print_state == "printing"
                 and physical_tool == self._selected_physical_tool):
             raise gcmd.error(
-                "SET_TOOL_FILAMENT_STATE for selected physical tool %s is "
+                "%s for selected physical tool %s is "
                 "only available while paused or outside a print" %
+                (command_name, physical_tool))
+
+    def _purge_physical_tool(self, physical_tool, error_factory, respond_info):
+        self._warn_unknown_purge_authority(physical_tool, respond_info)
+        candidate = self._purged_candidate(physical_tool, error_factory)
+        if candidate is self.state:
+            return
+        adapter = "%s TOOL=%s" % (
+            self.config.global_config.purge_gcode, physical_tool)
+        self.gcode.run_script_from_command(adapter)
+        try:
+            self._persist_state(candidate)
+        except OSError as error:
+            raise error_factory(
+                "Unable to persist tool fallback purge state: %s" % (error,))
+
+    def _purged_candidate(self, physical_tool, error_factory):
+        runtime = self._sensor_runtime.get(physical_tool)
+        authority_unknown = (
+            runtime is not None and runtime.authority == "unknown")
+        if not self.state.tools[physical_tool].loaded and not authority_unknown:
+            raise error_factory(
+                "Tool %s cannot be purged while its sensor confirms unloaded" %
                 (physical_tool,))
+        base = self.state
+        if authority_unknown and not base.tools[physical_tool].loaded:
+            base = base.with_filament_loaded(physical_tool)
+        return base.with_tool_purged(physical_tool)
+
+    def _warn_unknown_purge_authority(self, physical_tool, respond_info):
+        runtime = self._sensor_runtime.get(physical_tool)
+        if runtime is not None and runtime.authority == "unknown":
+            respond_info(
+                "Tool %s sensor authority is unknown; purge will continue "
+                "using operator authority" % (physical_tool,))
+
+    def _persist_purge_candidate(self, gcmd, candidate):
+        if candidate is self.state:
+            return
+        try:
+            self._persist_state(candidate)
+        except OSError as error:
+            raise gcmd.error(
+                "Unable to persist tool fallback purge state: %s" % (error,))
 
     def _read_sensor_status(self, runtime, eventtime):
         sensor = runtime.sensor
