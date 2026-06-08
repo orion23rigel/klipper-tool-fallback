@@ -157,6 +157,62 @@ class FallbackState:
         mappings = {name: name for name in self.tools}
         return self._canonical(self.tools, mappings)
 
+    def with_filament_loaded(self, physical):
+        current = self._require_tool(physical)
+        return self._replace_tool(
+            physical,
+            ToolState(True, False, False, current.backups),
+        )
+
+    def with_filament_unloaded(self, physical):
+        current = self._require_tool(physical)
+        return self._replace_tool(
+            physical,
+            ToolState(False, False, current.failed, current.backups),
+        )
+
+    def with_failed_runout(self, physical):
+        current = self._require_tool(physical)
+        return self._replace_tool(
+            physical,
+            ToolState(False, False, True, current.backups),
+        )
+
+    def with_tool_purged(self, physical):
+        current = self._require_tool(physical)
+        if not current.loaded:
+            raise StateValidationError(
+                "Tool %s cannot be marked purged while unloaded" %
+                (physical,))
+        return self._replace_tool(
+            physical,
+            ToolState(True, True, current.failed, current.backups),
+        )
+
+    def with_tool_unpurged(self, physical):
+        current = self._require_tool(physical)
+        return self._replace_tool(
+            physical,
+            ToolState(current.loaded, False, current.failed, current.backups),
+        )
+
+    def _require_tool(self, physical):
+        if physical not in self.tools:
+            raise StateValidationError(
+                "Physical state references unknown tool %s" % (physical,))
+        return self.tools[physical]
+
+    def _replace_tool(self, physical, replacement):
+        current = self._require_tool(physical)
+        if replacement.purged and not replacement.loaded:
+            raise StateValidationError(
+                "Tool %s cannot be purged while unloaded" % (physical,))
+        if replacement == current:
+            return self
+        tools = dict(self.tools)
+        tools[physical] = replacement
+        return self._canonical(tools, self.mappings)
+
 
 class StateStore:
     def __init__(self, state_path):
