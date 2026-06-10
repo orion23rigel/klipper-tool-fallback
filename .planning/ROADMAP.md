@@ -1,62 +1,14 @@
-# Roadmap: Klipper Tool Fallback
+# Roadmap
 
-## Phase 1: Extension Foundation And Persistence
+## Phase 1: Foundation
+- Goal: Establish reliable state and configuration.
+- Status: In Progress.
 
-Create the Klipper extension skeleton, configuration model, atomic JSON state store,
-state schema/versioning, startup reconciliation interfaces, and status commands.
+## Phase 2: Routing & Logic
+- Goal: Implement command interception and routing logic.
 
-Covers: ROUTE-01, STATE-01, STATE-02, STATE-04, ADAPT-01
+## Phase 3: Sensor & Purge
+- Goal: Integrate filament sensors and purge lifecycle.
 
-### Plans
-
-**Wave 1**
-- [x] `01-01-PLAN.md` - Configuration And Test Foundation
-
-**Wave 2** *(blocked on Wave 1 completion)*
-- [x] `01-02-PLAN.md` - Versioned State And Atomic Persistence
-
-**Wave 3** *(blocked on Waves 1 and 2 completion)*
-- [x] `01-03-PLAN.md` - Lifecycle Persistence And Status Surface
-
-## Phase 2: Command Routing And Manual Remapping
-
-Capture and intercept configured `Tn` handlers, implement physical bypass selection,
-persistent mappings, manual remap/restore/reset commands, and active-print transition
-ownership.
-
-Covers: ROUTE-02, ROUTE-03, ROUTE-04
-
-Contributes partial ROUTE-05 coverage: transition ownership and routing safety only.
-ROUTE-05 remains incomplete pending Phase 3 conditional-purge integration and Phase 4
-temperature-transfer/stage execution.
-
-## Phase 3: Sensor State And Purge Lifecycle
-
-Implement explicit sensor hooks, symmetric debounce, startup reconciliation, failed-state
-semantics, dedicated purge workflow, and active-print purge checks.
-
-Covers: STATE-03, SENS-01 through SENS-04, PURGE-01 through PURGE-05
-
-Also provides the conditional-purge integration required to complete ROUTE-05.
-
-## Phase 4: Automatic Fallback Workflow
-
-Implement immediate-pause ownership, transient recovery, recursive ordered backup
-resolution, temperature transfer, failed-heater shutdown, stage timeouts, conditional
-purge, persistent remapping, safe resume, and recoverable failures.
-
-Covers: FALL-01 through FALL-08
-
-Also provides the temperature-transfer and stage-execution integration required to
-complete ROUTE-05.
-
-## Phase 5: Notifications, Integration, And Verification
-
-Add notification adapters and meaningful messages, example configurations, comprehensive
-unit/workflow tests, installation documentation, and validation against a representative
-Klipper configuration.
-
-Covers: ADAPT-02, ADAPT-03, TEST-01 through TEST-03
-
----
-*Roadmap created: 2026-06-06*
+## Phase 4: Full Automation
+- Goal: Complete the automatic fallback loop.

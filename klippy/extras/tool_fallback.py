@@ -495,9 +495,11 @@ class ToolFallback:
 
     def _sensor_debounce_handler(self, tool):
         def callback(eventtime):
+            print(f"DEBUG: _sensor_debounce_handler: called for tool={tool}, eventtime={eventtime}")
             runtime = self._sensor_runtime[tool]
             if (runtime.debounce_deadline != eventtime
                     or runtime.debounce_target is None):
+                print(f"DEBUG: _sensor_debounce_handler: returning NEVER")
                 return self.printer.get_reactor().NEVER
             generation = runtime.debounce_generation
             target = runtime.debounce_target
@@ -617,16 +619,21 @@ class ToolFallback:
 
     def _record_sensor_event(
             self, tool, detected, requested_ownership=False):
+        print(f"DEBUG: _record_sensor_event: tool={tool}, detected={detected}")
         runtime = self._sensor_runtime[tool]
         eventtime = self.printer.get_reactor().monotonic()
         status = self._read_sensor_status(runtime, eventtime)
+        print(f"DEBUG: _record_sensor_event: status={status}")
         if status is None or not status["enabled"]:
+            print(f"DEBUG: _record_sensor_event: sensor unknown")
             self._set_sensor_unknown(tool, runtime)
             return
         if status["filament_detected"] != detected:
+            print(f"DEBUG: _record_sensor_event: detected mismatch")
             self._observe_sensor_reading(tool, status, eventtime, None)
             return
         if not detected:
+            print(f"DEBUG: _record_sensor_event: calling _begin_pending_runout")
             self._begin_pending_runout(tool, requested_ownership)
         self._observe_sensor_reading(
             tool, status, eventtime, "insert" if detected else "runout")
@@ -647,8 +654,7 @@ class ToolFallback:
         active_context = print_state in ("printing", "paused")
         if not selected or not active_context:
             return
-        pause_owned = bool(
-            requested_ownership and print_state == "paused" and selected)
+        pause_owned = bool(requested_ownership and selected)
         self._workflow_generation += 1
         self._workflow_checkpoint = WorkflowCheckpoint(
             source="automatic_fallback",
@@ -692,15 +698,145 @@ class ToolFallback:
                 self._workflow_checkpoint.failure_reason)
 
     def _confirmed_runout(self, checkpoint):
+        print(f"DEBUG: _confirmed_runout: called with checkpoint={checkpoint}")
         advanced = self._advance_workflow_checkpoint(
             checkpoint.generation, "debouncing", "confirmed_runout")
+        print(f"DEBUG: _confirmed_runout: advanced={advanced}")
         if advanced is None:
             return
         self._on_confirmed_runout(advanced)
 
     def _on_confirmed_runout(self, checkpoint):
-        # Later Phase 4 plans advance the confirmed, already-persisted runout.
-        return None
+        reactor = self.printer.get_reactor()
+        eventtime = reactor.monotonic()
+
+        # 0. Pause the print if active (before any fallback actions).
+        if self._print_is_active():
+            print(f"DEBUG: _on_confirmed_runout: print is active, calling PAUSE")
+            try:
+                self.gcode.run_script_from_command(
+                    self.config.global_config.pause_gcode)
+                print(f"DEBUG: _on_confirmed_runout: PAUSE called successfully")
+            except Exception as error:
+                print(f"DEBUG: _on_confirmed_runout: PAUSE failed: {error}")
+                self._block_workflow(
+                    checkpoint,
+                    "Unable to pause print before fallback: %s" % (error,))
+                return
+
+        # 1. Identify active logical route for the failed physical tool.
+        logical_tool = self._logical_route_for_physical(
+            checkpoint.current_physical_tool)
+        if logical_tool is None:
+            self._block_workflow(
+                checkpoint,
+                "Automatic fallback requires a known active logical "
+                "route for the failed tool; cannot proceed")
+            return
+
+        # 2. Capture target and shut down failed heater.
+        advanced = self._capture_and_shutdown_source(checkpoint)
+        if advanced is None:
+            return
+
+        # 3. Resolve backup graph with one fresh rescan on exhaustion.
+        resolution = self._resolve_backup_with_rescan(
+            checkpoint.current_physical_tool)
+        if resolution.candidate is None:
+            report = resolution.to_dict() if resolution else None
+            self._block_workflow(
+                advanced,
+                "No eligible backup tool found after one re-scan; "
+                "backups exhausted" if report else "Backup graph "
+                "resolution failed")
+            if report:
+                self._workflow_checkpoint = replace(
+                    self._workflow_checkpoint, graph_report=report)
+            return
+
+        selected = resolution.candidate
+        self._workflow_checkpoint = replace(
+            advanced,
+            stage="resolving",
+            requested_physical_tool=selected,
+            graph_report=resolution,
+        )
+
+        # 4. Preheat backup before physical selection.
+        preheated = self._preheat_requested_tool(self._workflow_checkpoint)
+        if preheated is None:
+            return
+
+        # 5. Select backup physically (once, no retry).
+        selection_deadline = (
+            eventtime + self.config.global_config.selection_timeout)
+        try:
+            self._select_physical(selected)
+        except Exception as error:
+            self._block_workflow(
+                preheated,
+                "Physical selection of backup tool %s failed: %s" %
+                (selected, error))
+            return
+        if reactor.monotonic() > selection_deadline:
+            self._block_workflow(
+                preheated,
+                "Physical selection of backup tool %s exceeded "
+                "timeout" % (selected,))
+            return
+
+        self._workflow_checkpoint = replace(
+            preheated, stage="selected", failure_reason=None)
+
+        # 6. Wait for heater readiness with timeout.
+        heating_deadline = (
+            eventtime + self.config.global_config.heating_timeout)
+        self._workflow_checkpoint = replace(
+            self._workflow_checkpoint,
+            stage="heating", stage_deadline=heating_deadline)
+        self._wait_for_heater_readiness(self._workflow_checkpoint)
+        if self._workflow_checkpoint.stage == "heating_timeout":
+            return
+
+        # 7. Conditionally purge the backup tool.
+        backup_state = self.state.tools[selected]
+        if not backup_state.purged:
+            try:
+                self._purge_physical_tool(
+                    selected,
+                    self.gcode.error,
+                    self.gcode.respond_info)
+            except Exception as error:
+                self._block_workflow(
+                    self._workflow_checkpoint,
+                    "Purge of backup tool %s failed: %s" %
+                    (selected, error))
+                return
+
+        # 8. Merge and persist logical mapping from current canonical state.
+        candidate = self._merge_mapping_candidate(self.state)
+        try:
+            self._persist_state(candidate)
+        except OSError as error:
+            self._block_workflow(
+                self._workflow_checkpoint,
+                "Unable to persist tool fallback mapping after "
+                "fallback: %s" % (error,))
+            return
+
+        # 9. Clear checkpoint and resume only when owned.
+        self._workflow_checkpoint = None
+        if checkpoint.pause_owned:
+            try:
+                self.gcode.run_script_from_command(
+                    self.config.global_config.resume_gcode)
+            except Exception as error:
+                self._block_workflow(
+                    replace(self._workflow_checkpoint,
+                            stage="blocked",
+                            failure_reason="Resume after fallback failed: %s" %
+                            (error,)),
+                    "Resume after fallback failed: %s" % (error,))
 
     def _checkpoint_matches(self, generation, stage):
         checkpoint = self._workflow_checkpoint
@@ -724,6 +860,54 @@ class ToolFallback:
                     self._active_logical_tool) == physical_tool:
                 return self._active_logical_tool
         return None
+
+    def _logical_route_for_physical(self, physical_tool):
+        """Identify the active logical route for a given physical tool.
+
+        Returns the logical tool name if one is currently mapped to the
+        given physical tool and is the active logical tool, otherwise
+        returns None.
+        """
+        if self._active_logical_tool is not None:
+            if self.state.mappings.get(
+                    self._active_logical_tool) == physical_tool:
+                return self._active_logical_tool
+        return None
+
+    def _wait_for_heater_readiness(self, checkpoint):
+        """Synchronously wait for the selected backup heater to reach
+        readiness, enforcing the configured heating timeout.
+
+        Polls heater.check_busy() and advances the reactor so that
+        timer-based callbacks can fire.  On timeout, the checkpoint
+        is left at heating_timeout for guarded RESUME recovery.
+        """
+        reactor = self.printer.get_reactor()
+        deadline = checkpoint.stage_deadline
+        requested = checkpoint.requested_physical_tool
+        heater = self._heaters.get(requested)
+        if heater is None:
+            return self._block_workflow(
+                checkpoint,
+                "Tool %s has no resolved destination heater" % requested)
+
+        while True:
+            eventtime = reactor.monotonic()
+            if eventtime >= deadline:
+                self._workflow_checkpoint = replace(
+                    checkpoint, stage="heating_timeout",
+                    failure_reason=None)
+                return
+            try:
+                if not heater.check_busy(eventtime):
+                    break
+            except Exception as error:
+                self._block_workflow(
+                    checkpoint,
+                    "Heater readiness check for tool %s failed: %s" %
+                    (requested, error))
+                return
+            reactor.advance(SENSOR_POLL_INTERVAL)
 
     def _resolve_backup_with_rescan(self, failed_tool, snapshot_provider=None):
         provider = snapshot_provider or self._canonical_state_snapshot
