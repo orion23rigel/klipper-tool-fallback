@@ -140,6 +140,8 @@ class ToolFallback:
         self.gcode.register_command(
             "SHOW_TOOL_FALLBACK_STATE", self.cmd_SHOW_TOOL_FALLBACK_STATE,
             desc="Show canonical tool fallback state")
+        # Re-entrancy guard for guarded resume handler
+        self._resume_in_progress = False
         self.gcode.register_command(
             "SELECT_PHYSICAL_TOOL", self.cmd_SELECT_PHYSICAL_TOOL,
             desc="Select a physical tool without changing logical mappings")
@@ -963,15 +965,24 @@ class ToolFallback:
         guarded recovery sequence instead of performing a normal resume.
         Otherwise delegate to the original resume handler when present.
         """
+        # Prevent re-entrant guarded resume attempts
+        if self._resume_in_progress:
+            if getattr(self, "_resume_original", None):
+                return self._resume_original(gcmd)
+            return None
+
         if self._workflow_checkpoint is None or self._workflow_checkpoint.stage != "heating_timeout":
             if getattr(self, "_resume_original", None):
                 return self._resume_original(gcmd)
             return None
         # Handle guarded resume for heating_timeout
         try:
+            self._resume_in_progress = True
             return self._handle_guarded_resume(gcmd)
         except Exception as error:
             raise gcmd.error(str(error))
+        finally:
+            self._resume_in_progress = False
 
     def _handle_guarded_resume(self, gcmd):
         """Attempt guarded recovery from a heating_timeout checkpoint.
@@ -1239,9 +1250,57 @@ class ToolFallback:
             self._transition_active = False
 
     def _run_pre_selection_transition_stages(
-            self, logical_tool, current_physical, requested_physical):
+            self, gcmd, logical_tool, current_physical, requested_physical):
         # Phase 4 integrates temperature-transfer stages here.
-        pass
+        # If heaters are not configured for either the source or requested
+        # physical tools, remain a no-op to preserve pre-Phase-4 behavior
+        # for tests that do not configure heaters.
+        if current_physical not in self._heaters or requested_physical not in self._heaters:
+            return
+
+        # Build a transient checkpoint to reuse existing helpers. Use a
+        # generation marker independent of the automatic workflow to avoid
+        # colliding with any running automatic fallback.
+        generation = self._workflow_generation + 1
+        checkpoint = WorkflowCheckpoint(
+            source=current_physical,
+            stage="transition",
+            generation=generation,
+            logical_tool=logical_tool,
+            current_physical_tool=current_physical,
+            requested_physical_tool=requested_physical,
+            pause_owned=(self._get_print_state() == "printing"),
+        )
+
+        # 1. Capture target temperature from source and shut it down.
+        advanced = self._capture_and_shutdown_source(checkpoint)
+        if advanced is None:
+            # _capture_and_shutdown_source will have set a blocked checkpoint
+            # when appropriate; surface a CLI-visible error to abort the
+            # transition.
+            raise gcmd.error("Unable to capture and shutdown source heater")
+
+        # 2. Preheat requested tool to captured target.
+        # Copy requested_physical_tool into the checkpoint expected by
+        # _preheat_requested_tool.
+        advanced = replace(advanced, requested_physical_tool=requested_physical)
+        preheated = self._preheat_requested_tool(advanced)
+        if preheated is None:
+            raise gcmd.error("Unable to preheat requested tool %s" % (requested_physical,))
+
+        # 3. Wait for heater readiness, enforcing heating_timeout.
+        heating_deadline = (
+            self.printer.get_reactor().monotonic()
+            + self.config.global_config.heating_timeout)
+        preheated = replace(preheated, stage="preheated", stage_deadline=heating_deadline)
+        self._workflow_checkpoint = preheated
+        self._wait_for_heater_readiness(preheated)
+        if self._workflow_checkpoint is not None and self._workflow_checkpoint.stage == "heating_timeout":
+            raise gcmd.error("Selected backup heater did not reach readiness before timeout")
+
+        # Clear the transient checkpoint now that preselection stages completed
+        self._workflow_checkpoint = None
+        return
 
     def _run_post_selection_transition_stages(
             self, gcmd, logical_tool, current_physical, requested_physical):
