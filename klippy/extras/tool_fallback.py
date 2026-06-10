@@ -495,11 +495,9 @@ class ToolFallback:
 
     def _sensor_debounce_handler(self, tool):
         def callback(eventtime):
-            print(f"DEBUG: _sensor_debounce_handler: called for tool={tool}, eventtime={eventtime}")
             runtime = self._sensor_runtime[tool]
             if (runtime.debounce_deadline != eventtime
                     or runtime.debounce_target is None):
-                print(f"DEBUG: _sensor_debounce_handler: returning NEVER")
                 return self.printer.get_reactor().NEVER
             generation = runtime.debounce_generation
             target = runtime.debounce_target
@@ -522,7 +520,6 @@ class ToolFallback:
                     self._observe_sensor_reading(tool, status, eventtime, None)
                     return self.printer.get_reactor().NEVER
                 # else: commanded runout was given; proceed using the commanded target
-            print(f"DEBUG: _sensor_debounce_handler: proceeding with target={target}, origin={runtime.debounce_origin}, status_detected={status['filament_detected']}")
             candidate = self._build_sensor_filament_candidate(tool, runtime)
             if candidate is not self.state:
                 self._persist_state(candidate)
@@ -629,17 +626,13 @@ class ToolFallback:
 
     def _record_sensor_event(
             self, tool, detected, requested_ownership=False):
-        print(f"DEBUG: _record_sensor_event: tool={tool}, detected={detected}")
         runtime = self._sensor_runtime[tool]
         eventtime = self.printer.get_reactor().monotonic()
         status = self._read_sensor_status(runtime, eventtime)
-        print(f"DEBUG: _record_sensor_event: status={status}")
         if status is None or not status["enabled"]:
-            print(f"DEBUG: _record_sensor_event: sensor unknown")
             self._set_sensor_unknown(tool, runtime)
             return
         if status["filament_detected"] != detected:
-            print(f"DEBUG: _record_sensor_event: detected mismatch")
             origin = "runout" if not detected else "insert"
             # If this was an explicit TOOL_FALLBACK_RUNOUT/INSERT command and
             # the physical sensor disagrees, treat the command as authoritative
@@ -680,13 +673,11 @@ class ToolFallback:
             self._observe_sensor_reading(tool, status, eventtime, None)
             return
         if not detected:
-            print(f"DEBUG: _record_sensor_event: calling _begin_pending_runout")
             self._begin_pending_runout(tool, requested_ownership)
         self._observe_sensor_reading(
             tool, status, eventtime, "insert" if detected else "runout")
 
     def _begin_pending_runout(self, physical_tool, requested_ownership):
-        print(f"DEBUG: _begin_pending_runout called for {physical_tool}, requested_ownership={requested_ownership}")
         if self._workflow_checkpoint is not None:
             if (self._workflow_checkpoint.source == "automatic_fallback"
                     and self._workflow_checkpoint.stage == "debouncing"
@@ -701,7 +692,6 @@ class ToolFallback:
         selected = self._selected_physical_tool == physical_tool
         active_context = print_state in ("printing", "paused")
         if not selected or not active_context:
-            print(f"DEBUG: _begin_pending_runout: not selected={selected} active_context={active_context} print_state={print_state} selected_physical={self._selected_physical_tool}")
             return
         pause_owned = bool(requested_ownership and selected)
         self._workflow_generation += 1
@@ -747,10 +737,8 @@ class ToolFallback:
                 self._workflow_checkpoint.failure_reason)
 
     def _confirmed_runout(self, checkpoint):
-        print(f"DEBUG: _confirmed_runout: called with checkpoint={checkpoint}")
         advanced = self._advance_workflow_checkpoint(
             checkpoint.generation, "debouncing", "confirmed_runout")
-        print(f"DEBUG: _confirmed_runout: advanced={advanced}")
         if advanced is None:
             return
         self._on_confirmed_runout(advanced)
@@ -761,13 +749,10 @@ class ToolFallback:
 
         # 0. Pause the print if active (before any fallback actions).
         if self._print_is_active():
-            print(f"DEBUG: _on_confirmed_runout: print is active, calling PAUSE")
             try:
                 self.gcode.run_script_from_command(
                     self.config.global_config.pause_gcode)
-                print(f"DEBUG: _on_confirmed_runout: PAUSE called successfully")
             except Exception as error:
-                print(f"DEBUG: _on_confirmed_runout: PAUSE failed: {error}")
                 self._block_workflow(
                     checkpoint,
                     "Unable to pause print before fallback: %s" % (error,))
