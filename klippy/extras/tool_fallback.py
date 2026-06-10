@@ -1224,7 +1224,7 @@ class ToolFallback:
                 "Changing active logical %s from physical %s to physical %s" %
                 (logical_tool, current_physical, requested_physical))
             self._run_pre_selection_transition_stages(
-                logical_tool, current_physical, requested_physical)
+                gcmd, logical_tool, current_physical, requested_physical)
             self._select_physical(requested_physical)
             self._run_post_selection_transition_stages(
                 gcmd, logical_tool, current_physical, requested_physical)
