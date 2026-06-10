@@ -170,6 +170,19 @@ class ToolFallback:
         self.gcode.register_command(
             "MARK_TOOL_UNPURGED", self.cmd_MARK_TOOL_UNPURGED,
             desc="Mark a physical tool unpurged")
+        # Wrap the global resume gcode with a guarded handler so that a
+        # user-invoked RESUME can trigger guarded recovery from a
+        # 'heating_timeout' checkpoint.  Keep a reference to the original
+        # resume handler so normal resume behavior is preserved when no
+        # guarded recovery is required.
+        try:
+            self._resume_original = self.gcode.register_command(
+                self.global_config.resume_gcode,
+                self._cmd_resume_wrapper,
+                desc="Guarded resume for tool fallback")
+        except Exception:
+            # Best-effort: if registering fails, silently continue
+            self._resume_original = None
 
     def register_tool(self, tool):
         if tool.name in self._tools:
@@ -942,6 +955,88 @@ class ToolFallback:
                     (requested, error))
                 return
             reactor.advance(SENSOR_POLL_INTERVAL)
+
+    def _cmd_resume_wrapper(self, gcmd):
+        """Registered wrapper for the global resume gcode.
+
+        If there is a recoverable 'heating_timeout' checkpoint, perform a
+        guarded recovery sequence instead of performing a normal resume.
+        Otherwise delegate to the original resume handler when present.
+        """
+        if self._workflow_checkpoint is None or self._workflow_checkpoint.stage != "heating_timeout":
+            if getattr(self, "_resume_original", None):
+                return self._resume_original(gcmd)
+            return None
+        # Handle guarded resume for heating_timeout
+        try:
+            return self._handle_guarded_resume(gcmd)
+        except Exception as error:
+            raise gcmd.error(str(error))
+
+    def _handle_guarded_resume(self, gcmd):
+        """Attempt guarded recovery from a heating_timeout checkpoint.
+
+        This will re-run the heater readiness wait and, if successful,
+        continue the normal purge/persist/clear/resume continuation.
+        On persistent timeout, the checkpoint is left unchanged and
+        resume is deferred.
+        """
+        checkpoint = self._workflow_checkpoint
+        if checkpoint is None or checkpoint.stage != "heating_timeout":
+            # Nothing to do; fall back to original handler if present
+            if getattr(self, "_resume_original", None):
+                return self._resume_original(gcmd)
+            return None
+
+        if not checkpoint.pause_owned:
+            raise gcmd.error("Resume is not owned by fallback; refusing guarded resume")
+
+        # Attempt to wait for heater readiness again
+        self._wait_for_heater_readiness(checkpoint)
+        # If still timed out, do not resume
+        if self._workflow_checkpoint is not None and self._workflow_checkpoint.stage == "heating_timeout":
+            self.gcode.respond_info("Selected backup heater not ready; resume deferred")
+            return None
+
+        # Proceed with purge of backup if needed
+        requested = checkpoint.requested_physical_tool
+        backup_state = self.state.tools[requested]
+        if not backup_state.purged:
+            try:
+                self._purge_physical_tool(
+                    requested, self.gcode.error, self.gcode.respond_info)
+            except Exception as error:
+                self._block_workflow(
+                    self._workflow_checkpoint,
+                    "Purge of backup tool %s failed: %s" % (requested, error))
+                return None
+
+        # Persist mapping candidate
+        candidate = self._merge_mapping_candidate(self.state)
+        try:
+            self._persist_state(candidate)
+        except OSError as error:
+            self._block_workflow(
+                self._workflow_checkpoint,
+                "Unable to persist tool fallback mapping after "
+                "fallback: %s" % (error,))
+            return None
+
+        # Clear checkpoint and resume when owned
+        self._workflow_checkpoint = None
+        if checkpoint.pause_owned:
+            try:
+                # Use run_script_from_command to ensure script durations are
+                # respected in tests (FakeGCode advances reactor time)
+                self.gcode.run_script_from_command(
+                    self.config.global_config.resume_gcode)
+            except Exception as error:
+                # Re-create a blocked checkpoint from the saved checkpoint
+                blocked = replace(checkpoint, stage="blocked",
+                                  failure_reason="Resume after fallback failed: %s" % (error,))
+                self._block_workflow(blocked,
+                                     "Resume after fallback failed: %s" % (error,))
+        return None
 
     def _resolve_backup_with_rescan(self, failed_tool, snapshot_provider=None):
         provider = snapshot_provider or self._canonical_state_snapshot
