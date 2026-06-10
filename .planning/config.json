@@ -1,22 +1,9 @@
 {
-  "mode": "interactive",
-  "granularity": "standard",
-  "parallelization": true,
-  "commit_docs": true,
-  "runtime": "codex",
-  "model_profile": "balanced",
-  "model_overrides": {
-    "gsd-codebase-mapper": "gpt-5.4-mini",
-    "gsd-pattern-mapper": "gpt-5.4-mini",
-    "gsd-doc-classifier": "gpt-5.4-mini"
-  },
   "workflow": {
-    "research": true,
-    "plan_check": true,
-    "verifier": true,
-    "nyquist_validation": true,
-    "auto_advance": false,
-    "use_worktrees": false,
-    "_auto_chain_active": false
+    "auto_commit": true,
+    "use_subagents": true
+  },
+  "preferences": {
+    "language": "en-US"
   }
 }

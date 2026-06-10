@@ -136,6 +136,164 @@ def test_persisted_backup_order_takes_precedence_over_configuration():
     assert reconciled.tools["T0"].backups == ("T2", "T1")
 
 
+def test_with_mapping_returns_canonical_immutable_candidate():
+    state = FallbackState.from_dict(valid_dict())
+
+    candidate = state.with_mapping("T1", "T0")
+
+    assert candidate is not state
+    assert candidate.mappings == {"T0": "T2", "T1": "T0", "T2": "T2"}
+    assert list(candidate.mappings) == ["T0", "T1", "T2"]
+    assert candidate.tools == state.tools
+    assert candidate.tools is not state.tools
+    assert state.mappings == {"T0": "T2", "T1": "T1", "T2": "T2"}
+    with pytest.raises(TypeError):
+        candidate.mappings["T1"] = "T2"
+
+
+def test_with_identity_mapping_preserves_unrelated_state():
+    state = FallbackState.from_dict(valid_dict())
+
+    candidate = state.with_identity_mapping("T0")
+
+    assert candidate.mappings == {"T0": "T0", "T1": "T1", "T2": "T2"}
+    assert candidate.tools == state.tools
+    assert candidate.tools["T0"].backups == ("T2", "T1")
+    assert state.mappings["T0"] == "T2"
+
+
+def test_with_identity_mappings_resets_every_route_and_preserves_tools():
+    state = FallbackState.from_dict(valid_dict()).with_mapping("T1", "T0")
+
+    candidate = state.with_identity_mappings()
+
+    assert candidate.mappings == {"T0": "T0", "T1": "T1", "T2": "T2"}
+    assert candidate.tools == state.tools
+    assert list(candidate.tools) == ["T0", "T1", "T2"]
+
+
+def test_mapping_mutation_no_ops_return_existing_state():
+    identity = FallbackState.from_config(configured(
+        ("T0", ("T1",)), ("T1", ())))
+    mapped = FallbackState.from_dict(valid_dict())
+
+    assert mapped.with_mapping("T0", "T2") is mapped
+    assert mapped.with_identity_mapping("T1") is mapped
+    assert identity.with_identity_mappings() is identity
+
+
+@pytest.mark.parametrize(("method", "expected"), [
+    ("with_filament_loaded", (True, False, False)),
+    ("with_filament_unloaded", (False, False, False)),
+    ("with_failed_runout", (False, False, True)),
+    ("with_tool_purged", (True, True, False)),
+    ("with_tool_unpurged", (True, False, False)),
+])
+def test_filament_and_purge_candidates_have_exact_field_semantics(
+        method, expected):
+    state = FallbackState.from_dict(valid_dict())
+
+    candidate = getattr(state, method)("T0")
+
+    tool = candidate.tools["T0"]
+    assert (tool.loaded, tool.purged, tool.failed) == expected
+    assert tool.backups == ("T2", "T1")
+    assert candidate.tools["T1"] is state.tools["T1"]
+    assert candidate.tools["T2"] is state.tools["T2"]
+    assert candidate.mappings == state.mappings
+    assert candidate.to_dict()["version"] == 1
+    assert state.tools["T0"].purged is True
+
+
+def test_loaded_candidate_clears_existing_failed_and_purged_state():
+    decoded = valid_dict()
+    decoded["tools"]["T0"].update(purged=False, failed=True)
+    state = FallbackState.from_dict(decoded)
+
+    candidate = state.with_filament_loaded("T0")
+
+    assert candidate.tools["T0"].loaded is True
+    assert candidate.tools["T0"].purged is False
+    assert candidate.tools["T0"].failed is False
+
+
+def test_unloaded_candidate_preserves_existing_failed_state():
+    state = FallbackState.from_dict(valid_dict())
+
+    candidate = state.with_filament_unloaded("T1")
+
+    assert candidate is state
+    assert candidate.tools["T1"].failed is True
+
+
+@pytest.mark.parametrize(("method", "tool"), [
+    ("with_filament_loaded", "T2"),
+    ("with_filament_unloaded", "T1"),
+    ("with_failed_runout", "T1"),
+    ("with_tool_purged", "T0"),
+    ("with_tool_unpurged", "T2"),
+])
+def test_filament_and_purge_exact_no_ops_return_existing_state(method, tool):
+    state = FallbackState.from_dict(valid_dict())
+
+    assert getattr(state, method)(tool) is state
+
+
+def test_filament_and_purge_candidates_remain_canonical_and_immutable():
+    state = FallbackState.from_dict(valid_dict())
+
+    candidate = state.with_failed_runout("T0")
+
+    assert list(candidate.tools) == ["T0", "T1", "T2"]
+    assert list(candidate.mappings) == ["T0", "T1", "T2"]
+    with pytest.raises(TypeError):
+        candidate.tools["T0"] = state.tools["T0"]
+
+
+def test_mark_purged_rejects_known_unloaded_tool():
+    state = FallbackState.from_dict(valid_dict())
+
+    with pytest.raises(StateValidationError, match="purged while unloaded"):
+        state.with_tool_purged("T1")
+
+
+@pytest.mark.parametrize("method", [
+    "with_filament_loaded",
+    "with_filament_unloaded",
+    "with_failed_runout",
+    "with_tool_purged",
+    "with_tool_unpurged",
+])
+def test_filament_and_purge_candidates_reject_unknown_tool(method):
+    state = FallbackState.from_dict(valid_dict())
+
+    with pytest.raises(StateValidationError, match="unknown tool T9"):
+        getattr(state, method)("T9")
+
+
+@pytest.mark.parametrize(("logical", "physical", "message"), [
+    ("T9", "T0", "Logical route references unknown tool T9"),
+    ("t0", "T0", "Logical route references unknown tool t0"),
+    ("T0", "T9", "Physical route references unknown tool T9"),
+    ("T0", "t0", "Physical route references unknown tool t0"),
+])
+def test_with_mapping_rejects_unknown_route_endpoints(
+        logical, physical, message):
+    state = FallbackState.from_dict(valid_dict())
+
+    with pytest.raises(StateValidationError, match=message):
+        state.with_mapping(logical, physical)
+
+
+def test_with_identity_mapping_rejects_unknown_logical_route():
+    state = FallbackState.from_dict(valid_dict())
+
+    with pytest.raises(
+            StateValidationError,
+            match="Logical route references unknown tool T9"):
+        state.with_identity_mapping("T9")
+
+
 @pytest.mark.parametrize("mutate", [
     lambda value: value.update(version=2),
     lambda value: value.update(version=True),

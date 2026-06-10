@@ -24,7 +24,7 @@ class GlobalConfig:
 @dataclass(frozen=True)
 class ToolConfig:
     name: str
-    filament_sensor: str
+    filament_sensor: object
     heater: str
     backups: tuple
 
@@ -41,6 +41,26 @@ def _nonempty(config, option, default=...):
         raise config.error("Option '%s' in section '%s' must not be empty" %
                            (option, config.get_name()))
     return value.strip()
+
+
+def _optional_nonempty(config, option):
+    missing = object()
+    value = config.get(option, missing)
+    if value is missing:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise config.error("Option '%s' in section '%s' must not be empty" %
+                           (option, config.get_name()))
+    return value.strip()
+
+
+def _purge_adapter(config):
+    adapter = _nonempty(config, "purge_gcode", "_TOOL_FALLBACK_PURGE")
+    if adapter.split(None, 1)[0].upper() == "PURGE_TOOL":
+        raise config.error(
+            "Option 'purge_gcode' in section '%s' must not invoke public "
+            "PURGE_TOOL" % (config.get_name(),))
+    return adapter
 
 
 def normalize_tool_name(config, name):
@@ -73,7 +93,7 @@ def parse_global_config(config):
         debounce_time=_positive_finite_float(config, "debounce_time", 1.0),
         pause_gcode=_nonempty(config, "pause_gcode", "PAUSE"),
         resume_gcode=_nonempty(config, "resume_gcode", "RESUME"),
-        purge_gcode=_nonempty(config, "purge_gcode", "PURGE_TOOL"),
+        purge_gcode=_purge_adapter(config),
         notify_gcode=_nonempty(
             config, "notify_gcode", "_TOOL_FALLBACK_NOTIFY"),
         selection_timeout=_positive_finite_float(
@@ -99,7 +119,7 @@ def parse_tool_config(config):
     )
     return ToolConfig(
         name=name,
-        filament_sensor=_nonempty(config, "filament_sensor"),
+        filament_sensor=_optional_nonempty(config, "filament_sensor"),
         heater=_nonempty(config, "heater"),
         backups=backups,
     )
