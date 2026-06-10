@@ -509,10 +509,20 @@ class ToolFallback:
                 return self.printer.get_reactor().NEVER
             runtime.enabled = status["enabled"]
             runtime.detected = status["filament_detected"]
-            if (runtime.debounce_generation != generation
-                    or status["filament_detected"] != target):
+            # If the sensor reading changed or this is not the expected target,
+            # normally observe the new reading and restart debounce. However,
+            # when the debounce was explicitly seeded by a TOOL_FALLBACK_RUNOUT
+            # command (debounce_origin == "runout"), honor the commanded
+            # target instead of requiring the physical sensor to match it.
+            if runtime.debounce_generation != generation:
                 self._observe_sensor_reading(tool, status, eventtime, None)
                 return self.printer.get_reactor().NEVER
+            if status["filament_detected"] != target:
+                if runtime.debounce_origin != "runout":
+                    self._observe_sensor_reading(tool, status, eventtime, None)
+                    return self.printer.get_reactor().NEVER
+                # else: commanded runout was given; proceed using the commanded target
+            print(f"DEBUG: _sensor_debounce_handler: proceeding with target={target}, origin={runtime.debounce_origin}, status_detected={status['filament_detected']}")
             candidate = self._build_sensor_filament_candidate(tool, runtime)
             if candidate is not self.state:
                 self._persist_state(candidate)
@@ -630,6 +640,43 @@ class ToolFallback:
             return
         if status["filament_detected"] != detected:
             print(f"DEBUG: _record_sensor_event: detected mismatch")
+            origin = "runout" if not detected else "insert"
+            # If this was an explicit TOOL_FALLBACK_RUNOUT/INSERT command and
+            # the physical sensor disagrees, treat the command as authoritative
+            # only when the caller explicitly claimed ownership (PAUSE_OWNED=1).
+            if requested_ownership:
+                # Seed debounce with the commanded target (not the current sensor
+                # reading) so an explicit TOOL_FALLBACK_RUNOUT/INSERT command can
+                # initiate debounce toward the commanded state.
+                runtime.enabled = status["enabled"]
+                runtime.detected = status["filament_detected"]
+                runtime.debounce_target = detected
+                runtime.debounce_generation += 1
+                runtime.debounce_deadline = (
+                    eventtime + self.config.global_config.debounce_time)
+                runtime.debounce_origin = origin
+                self.printer.get_reactor().update_timer(
+                    runtime.debounce_timer, runtime.debounce_deadline)
+                # Begin pending runout immediately for commanded runout events.
+                if not detected:
+                    self._begin_pending_runout(tool, requested_ownership)
+                    # Persist failed-runout state immediately since the
+                    # command is authoritative and we're bypassing the
+                    # normal sensor-debounce persistence path.
+                    pending = self._pending_runout_checkpoint(tool)
+                    if pending is not None:
+                        candidate = self.state.with_failed_runout(tool)
+                        if candidate is not self.state:
+                            try:
+                                self._persist_state(candidate)
+                            except OSError as error:
+                                self._block_workflow(pending, "Unable to persist failed-runout state: %s" % (error,))
+                                return
+                        self._confirmed_runout(pending)
+                return
+            # Non-authoritative commands fall back to standard sensor observation
+            # behavior: observe the current sensor reading and let debounce run
+            # normally.
             self._observe_sensor_reading(tool, status, eventtime, None)
             return
         if not detected:
@@ -639,6 +686,7 @@ class ToolFallback:
             tool, status, eventtime, "insert" if detected else "runout")
 
     def _begin_pending_runout(self, physical_tool, requested_ownership):
+        print(f"DEBUG: _begin_pending_runout called for {physical_tool}, requested_ownership={requested_ownership}")
         if self._workflow_checkpoint is not None:
             if (self._workflow_checkpoint.source == "automatic_fallback"
                     and self._workflow_checkpoint.stage == "debouncing"
@@ -653,6 +701,7 @@ class ToolFallback:
         selected = self._selected_physical_tool == physical_tool
         active_context = print_state in ("printing", "paused")
         if not selected or not active_context:
+            print(f"DEBUG: _begin_pending_runout: not selected={selected} active_context={active_context} print_state={print_state} selected_physical={self._selected_physical_tool}")
             return
         pause_owned = bool(requested_ownership and selected)
         self._workflow_generation += 1
