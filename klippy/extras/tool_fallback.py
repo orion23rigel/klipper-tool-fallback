@@ -69,6 +69,13 @@ class GraphResolution:
         }
 
 
+@dataclass(frozen=True)
+class BackupOperation:
+    operation: str
+    tool: object = None
+    backups: object = None
+
+
 def resolve_backup_graph(state, failed_tool, unknown_authority=()):
     unknown_authority = frozenset(unknown_authority)
     evaluated = []
@@ -154,6 +161,15 @@ class ToolFallback:
         self.gcode.register_command(
             "RESET_TOOL_MAPPINGS", self.cmd_RESET_TOOL_MAPPINGS,
             desc="Restore all logical tools to identity mappings")
+        self.gcode.register_command(
+            "SET_TOOL_BACKUPS", self.cmd_SET_TOOL_BACKUPS,
+            desc="Replace one physical tool's ordered backup policy")
+        self.gcode.register_command(
+            "RESTORE_TOOL_BACKUPS", self.cmd_RESTORE_TOOL_BACKUPS,
+            desc="Restore one physical tool's configured backup policy")
+        self.gcode.register_command(
+            "RESET_TOOL_BACKUPS", self.cmd_RESET_TOOL_BACKUPS,
+            desc="Restore every physical tool's configured backup policy")
         self.gcode.register_command(
             "TOOL_FALLBACK_RUNOUT", self.cmd_TOOL_FALLBACK_RUNOUT,
             desc="Record a tool fallback filament runout event")
@@ -248,6 +264,24 @@ class ToolFallback:
             raise gcmd.error("Tool fallback routing is not initialized")
         candidate = self.state.with_identity_mappings()
         self._apply_mapping_candidate(gcmd, candidate)
+
+    def cmd_SET_TOOL_BACKUPS(self, gcmd):
+        physical_tool = self._require_configured_tool(gcmd, "TOOL")
+        operation = BackupOperation(
+            "set", physical_tool,
+            self._parse_backup_list(gcmd, physical_tool),
+        )
+        self._apply_backup_operation(gcmd, operation)
+
+    def cmd_RESTORE_TOOL_BACKUPS(self, gcmd):
+        physical_tool = self._require_configured_tool(gcmd, "TOOL")
+        operation = BackupOperation("restore", physical_tool)
+        self._apply_backup_operation(gcmd, operation)
+
+    def cmd_RESET_TOOL_BACKUPS(self, gcmd):
+        if self.state is None or self._physical_handlers is None:
+            raise gcmd.error("Tool fallback routing is not initialized")
+        self._apply_backup_operation(gcmd, BackupOperation("reset"))
 
     def cmd_TOOL_FALLBACK_RUNOUT(self, gcmd):
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
@@ -1208,6 +1242,92 @@ class ToolFallback:
                 self._sensor_runtime.items(),
                 key=lambda item: int(item[0][1:]))
         }
+
+    def _parse_backup_list(self, gcmd, physical_tool):
+        raw_backups = gcmd.get("BACKUPS")
+        if type(raw_backups) is not str:
+            raise gcmd.error("BACKUPS must be a comma-separated tool list")
+        stripped = raw_backups.strip()
+        if not stripped:
+            return ()
+        backups = tuple(item.strip() for item in stripped.split(","))
+        if any(not item for item in backups):
+            raise gcmd.error(
+                "BACKUPS must not contain empty entries")
+        unknown = [item for item in backups if item not in self.config.tools]
+        if unknown:
+            raise gcmd.error(
+                "BACKUPS must contain configured canonical tools; got %s" %
+                (", ".join(unknown),))
+        if physical_tool in backups:
+            raise gcmd.error(
+                "Tool %s cannot reference itself as a backup" %
+                (physical_tool,))
+        if len(set(backups)) != len(backups):
+            raise gcmd.error(
+                "Tool %s contains duplicate backup references" %
+                (physical_tool,))
+        return backups
+
+    def _backup_candidate(self, operation):
+        if operation.operation == "set":
+            return self.state.with_backups(operation.tool, operation.backups)
+        if operation.operation == "restore":
+            return self.state.with_backups(
+                operation.tool, self.config.tools[operation.tool].backups)
+        if operation.operation == "reset":
+            return self.state.with_all_backups({
+                tool: config.backups
+                for tool, config in self.config.tools.items()
+            })
+        raise tool_fallback_state.StateValidationError(
+            "Unknown backup operation %s" % (operation.operation,))
+
+    def _apply_backup_operation(self, gcmd, operation):
+        if (self._workflow_checkpoint is not None
+                or self._transition_active
+                or getattr(self, "_notification_in_progress", False)
+                or getattr(self, "_backup_operations", ())):
+            raise gcmd.error(
+                "Backup policy change cannot apply immediately while tool "
+                "fallback work is active")
+        try:
+            candidate = self._backup_candidate(operation)
+        except tool_fallback_state.StateValidationError as error:
+            raise gcmd.error(str(error))
+        if candidate is self.state:
+            gcmd.respond_info(
+                "%s unchanged: %s (no write)" %
+                (self._backup_operation_subject(operation),
+                 self._format_backup_policy(operation)))
+            return
+        try:
+            self._persist_state(candidate)
+        except OSError as error:
+            raise gcmd.error(
+                "Unable to persist tool fallback backup policy: %s" %
+                (error,))
+        gcmd.respond_info(
+            "%s persisted: %s" %
+            (self._backup_operation_subject(operation),
+             self._format_backup_policy(operation)))
+
+    def _backup_operation_subject(self, operation):
+        if operation.operation == "reset":
+            return "All tool backups"
+        return "Tool %s backups" % (operation.tool,)
+
+    def _format_backup_policy(self, operation):
+        if operation.operation == "reset":
+            return "; ".join(
+                "%s=%s" % (tool, self._format_backup_list(
+                    self.state.tools[tool].backups))
+                for tool in self.state.tools
+            )
+        return self._format_backup_list(self.state.tools[operation.tool].backups)
+
+    def _format_backup_list(self, backups):
+        return ",".join(backups) if backups else "(empty)"
 
     def _apply_mapping_candidate(self, gcmd, candidate):
         if candidate is self.state:
