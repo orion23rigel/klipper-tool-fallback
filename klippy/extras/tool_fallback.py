@@ -482,7 +482,13 @@ class ToolFallback:
             failure_reason=reason)
         self._workflow_checkpoint = blocked
         self.gcode.respond_info(reason)
+        if blocked.source == "automatic_fallback":
+            self._after_terminal_workflow()
         return blocked
+
+    def _after_terminal_workflow(self):
+        # Plan 05-03 inserts terminal notification delivery before this drain.
+        self._drain_backup_operations()
 
     def _workflow_stage_failed(self, checkpoint):
         return checkpoint is None or checkpoint.stage == "blocked"
@@ -795,19 +801,17 @@ class ToolFallback:
             (checkpoint.current_physical_tool,))
         self._workflow_checkpoint = None
         if not checkpoint.pause_owned:
+            self._after_terminal_workflow()
             return
         try:
             self.gcode.run_script_from_command(
                 self.config.global_config.resume_gcode)
         except Exception as error:
-            self._workflow_checkpoint = replace(
+            self._block_workflow(
                 checkpoint,
-                stage="blocked",
-                failure_reason="Unable to resume after transient runout: %s" %
-                (error,),
-            )
-            self.gcode.respond_info(
-                self._workflow_checkpoint.failure_reason)
+                "Unable to resume after transient runout: %s" % (error,))
+            return
+        self._after_terminal_workflow()
 
     def _confirmed_runout(self, checkpoint):
         advanced = self._advance_workflow_checkpoint(
@@ -945,6 +949,8 @@ class ToolFallback:
                 self._block_workflow(
                     completed,
                     "Resume after fallback failed: %s" % (error,))
+                return
+        self._after_terminal_workflow()
 
     def _checkpoint_matches(self, generation, stage):
         checkpoint = self._workflow_checkpoint
@@ -1118,6 +1124,8 @@ class ToolFallback:
                                   failure_reason="Resume after fallback failed: %s" % (error,))
                 self._block_workflow(blocked,
                                      "Resume after fallback failed: %s" % (error,))
+                return None
+        self._after_terminal_workflow()
         return None
 
     def _resolve_backup_with_rescan(self, failed_tool, snapshot_provider=None):
@@ -1508,6 +1516,7 @@ class ToolFallback:
                     self.config.global_config.resume_gcode)
         finally:
             self._transition_active = False
+            self._drain_backup_operations()
 
     def _run_pre_selection_transition_stages(
             self, gcmd, logical_tool, current_physical, requested_physical):

@@ -796,6 +796,79 @@ def test_active_transition_pause_failure_prevents_warning_selection_and_save(
     assert printer.gcode.script_events == ["PAUSE"]
 
 
+def test_backup_reentry_during_transition_drains_only_after_successful_exit(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    handlers = {
+        name: physical_handler_spy(name, [])
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+    printer.gcode.invoke_command("T0")
+    mark_all_tools_purged(extension)
+    printer.add_object("print_stats", FakePrintStats("printing"))
+    original = printer.gcode.run_script_from_command
+    observed = []
+
+    def queue_during_pause(script):
+        original(script)
+        if script == "PAUSE":
+            printer.gcode.invoke_command(
+                "SET_TOOL_BACKUPS",
+                FakeGCmd({"TOOL": "T0", "BACKUPS": "T2"}))
+            observed.append(extension.state.tools["T0"].backups)
+
+    printer.gcode.run_script_from_command = queue_during_pause
+
+    printer.gcode.invoke_command(
+        "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T1"}))
+
+    assert observed == [()]
+    assert extension.state.mappings["T0"] == "T1"
+    assert extension.state.tools["T0"].backups == ("T2",)
+    assert extension._backup_operation_queue == []
+
+
+def test_transition_failure_is_preserved_when_exit_drain_fails(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    handlers = {
+        name: physical_handler_spy(name, [])
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+    printer.gcode.invoke_command("T0")
+    mark_all_tools_purged(extension)
+    printer.add_object("print_stats", FakePrintStats("printing"))
+    original = printer.gcode.run_script_from_command
+
+    def queue_then_fail_pause(script):
+        original(script)
+        if script == "PAUSE":
+            printer.gcode.invoke_command(
+                "SET_TOOL_BACKUPS",
+                FakeGCmd({"TOOL": "T0", "BACKUPS": "T2"}))
+            raise CommandError("original transition failure")
+
+    def fail_save(candidate):
+        raise OSError("injected exit drain failure")
+
+    printer.gcode.run_script_from_command = queue_then_fail_pause
+    monkeypatch.setattr(extension._state_store, "save", fail_save)
+
+    with pytest.raises(CommandError, match="original transition failure"):
+        printer.gcode.invoke_command(
+            "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T1"}))
+
+    assert len(extension._backup_operation_queue) == 1
+    assert extension._transition_active is False
+    assert "injected exit drain failure" in printer.gcode.responses[-2]
+
+
 def test_active_transition_blocked_source_stage_aborts_before_selection(
         config_factory, prefix_config_factory, printer, tmp_path):
     events = []

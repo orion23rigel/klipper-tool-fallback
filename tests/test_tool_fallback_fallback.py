@@ -854,12 +854,42 @@ def test_guarded_resume_after_heating_timeout_completes_fallback(
     printer.reactor.advance(1.0)
     assert extension._workflow_checkpoint.stage == "heating_timeout"
 
+    original_backups = extension.state.tools["T0"].backups
+    queued = FakeGCmd({"TOOL": "T0", "BACKUPS": ""})
+    printer.gcode.invoke_command("SET_TOOL_BACKUPS", queued)
+    assert extension.state.tools["T0"].backups == original_backups
+    assert len(extension._backup_operation_queue) == 1
+
     t1_heater.ready = True
     printer.gcode.invoke_command("RESUME", FakeGCmd())
 
     assert extension._workflow_checkpoint is None
     assert extension.state.mappings["T0"] == "T1"
+    assert extension.state.tools["T0"].backups == ()
+    assert extension._backup_operation_queue == []
     assert printer.gcode.script_events == ["PAUSE", "RESUME"]
+
+
+def test_transient_terminal_success_drains_future_policy_only(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension, _ = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        {"T0": tool_state(backups=("T1",)), "T1": tool_state()})
+    checkpoint = WorkflowCheckpoint(
+        source="automatic_fallback",
+        stage="debouncing",
+        generation=1,
+        current_physical_tool="T0",
+    )
+    extension._workflow_checkpoint = checkpoint
+    queued = FakeGCmd({"TOOL": "T0", "BACKUPS": ""})
+    printer.gcode.invoke_command("SET_TOOL_BACKUPS", queued)
+
+    extension._complete_transient_runout(checkpoint)
+
+    assert extension._workflow_checkpoint is None
+    assert extension.state.tools["T0"].backups == ()
+    assert extension._backup_operation_queue == []
 
 
 def test_guarded_resume_readiness_failure_remains_blocked_without_publishing(

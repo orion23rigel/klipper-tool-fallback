@@ -390,3 +390,26 @@ def test_queue_is_runtime_only_json_safe_and_disconnect_warns(
     printer.send_event("klippy:disconnect")
 
     assert "Discarding 1 queued" in printer.gcode.responses[-1]
+
+
+def test_automatic_terminal_block_drains_without_masking_outcome(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    checkpoint = tool_fallback.WorkflowCheckpoint(
+        "automatic_fallback", "heating", 1)
+    extension._workflow_checkpoint = checkpoint
+    invoke(printer, "SET_TOOL_BACKUPS", TOOL="T0", BACKUPS="T2")
+
+    def fail_save(candidate):
+        raise OSError("injected terminal queue failure")
+
+    monkeypatch.setattr(extension._state_store, "save", fail_save)
+
+    blocked = extension._block_workflow(checkpoint, "original terminal failure")
+
+    assert blocked is extension._workflow_checkpoint
+    assert blocked.stage == "blocked"
+    assert blocked.failure_reason == "original terminal failure"
+    assert len(extension._backup_operation_queue) == 1
+    assert "injected terminal queue failure" in printer.gcode.responses[-2]
