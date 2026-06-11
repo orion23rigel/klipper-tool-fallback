@@ -1,17 +1,19 @@
-# Roadmap
+# Roadmap: Klipper Tool Fallback
 
-## Phase 1: Foundation
-- Goal: Establish reliable state and configuration.
-- Status: Completed.
+## Milestones
 
-## Phase 2: Routing & Logic
-- Goal: Implement command interception and routing logic.
-- Status: Completed.
+- [x] **v1.0 MVP** - Phases 1-4 shipped 2026-06-11
+- [ ] **Next milestone** - Phase 5 notifications, integration, and verification
 
-## Phase 3: Sensor & Purge
-- Goal: Integrate filament sensors and purge lifecycle.
-- Status: Completed.
+## Archived Phases
 
-## Phase 4: Full Automation
-- Goal: Complete the automatic fallback loop.
-- Status: Completed (all T1-T3 implemented and merged)
+See [v1.0 roadmap](milestones/v1.0-ROADMAP.md) and
+[v1.0 phase history](milestones/v1.0-phases/).
+
+## Active Phases
+
+### Phase 5: Notifications, Integration, And Verification
+
+- Goal: Complete deferred external notifications, representative hardware UAT,
+  printer-specific integration guidance, and release verification.
+- Status: Not planned.

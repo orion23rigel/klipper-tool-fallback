@@ -15,3 +15,12 @@ The extension implements persistent routing, sensor and purge lifecycle manageme
 safe active-route transitions, and automatic backup fallback with fail-closed runtime
 checkpoints. Hardware UAT, external notifications, and runtime backup-list management
 remain deferred to the next milestone.
+
+## Next Milestone Goals
+
+- External notification integration.
+- Representative live-printer UAT and printer-specific installation guidance.
+- Runtime backup-list management and CI automation.
+
+---
+*Last updated: 2026-06-11 after v1.0 milestone*
