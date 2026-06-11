@@ -102,8 +102,8 @@ indicates a Phase 03 behavioral failure.
 - **Notifications and integration documentation:** meaningful external notifications,
   example configurations, and integration docs remain Phase 05 work.
 - **Real-printer UAT:** live Klipper sensor hook behavior, printer-specific purge macros,
-  and hardware pause/resume interactions remain deferred per user direction until the
-  software is more feature complete.
+  and hardware pause/resume interactions remain assigned to Phase 05 by the milestone
+  plan; this scheduling was not an explicit user deferral.
 
 ## Residual Risk
 

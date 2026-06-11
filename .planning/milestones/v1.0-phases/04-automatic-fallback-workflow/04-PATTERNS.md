@@ -435,7 +435,8 @@ persistence failure.
 - Do not guess heater targets or weaken Klipper heater safety.
 - Do not automatically select another tool or roll back after a physical fallback
   attempt.
-- Keep real-printer UAT deferred to Phase 5 per user direction.
+- Keep real-printer UAT assigned to Phase 5 by the milestone plan; do not attribute
+  this scheduling decision to the user.
 
 ---
 *Phase: 04-automatic-fallback-workflow*

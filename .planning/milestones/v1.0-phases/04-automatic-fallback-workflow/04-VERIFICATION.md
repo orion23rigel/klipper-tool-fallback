@@ -67,7 +67,8 @@ route.
 
 ## Deferred Items
 
-- Representative hardware verification remains deferred to Phase 5 by user direction.
+- Representative hardware verification remains assigned to Phase 5 by the milestone
+  plan; this was not explicitly deferred by the user.
 - External notifications and runtime backup-list mutation commands remain beyond v1.0.
 - Existing environment-level `pytest-asyncio` deprecation warnings remain.
 
