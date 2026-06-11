@@ -33,7 +33,7 @@ requirements, work items, acceptance gates, or completion claims:
   2. Missing, failing, delayed, recursive, or re-entering notification adapters leave canonical state, mappings, hardware actions, workflow outcome, pause ownership, and resume policy unchanged while failures remain locally visible.
   3. Operators can atomically replace or clear one tool's ordered backup list, with successful changes immediately visible and affecting only future resolution while unrelated state remains unchanged.
   4. Operators can atomically restore one tool or all tools to configured backup defaults through the same persistence path.
-  5. Invalid or workflow-conflicting backup mutations are rejected, exact no-ops do not write, persistence failures do not publish, and accepted lists preserve order and the existing loop-safe cycle policy.
+  5. Invalid backup mutations are rejected; mutations submitted during active workflows or transitions are queued and processed in submission order after any terminal outcome, stopping at the first application failure; exact no-ops do not write, persistence failures do not publish, and accepted lists preserve order and the existing loop-safe cycle policy.
 **Plans:** TBD
 
 ### Phase 6: Examples And Live Integration

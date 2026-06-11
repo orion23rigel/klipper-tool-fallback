@@ -16,7 +16,7 @@
 - [ ] **BACKUP-01:** Operators can atomically replace or clear one tool's complete ordered backup list while preserving unrelated state.
 - [ ] **BACKUP-02:** Operators can restore one tool or all tools to configured backup defaults through the same atomic persistence path.
 - [ ] **BACKUP-03:** Runtime backup mutations reject malformed, unknown, duplicate, and self-referential entries, preserve order, and retain the current loop-safe cycle policy.
-- [ ] **BACKUP-04:** Backup mutation is rejected during any workflow checkpoint or active transition; successful changes affect only future resolution and are immediately visible.
+- [ ] **BACKUP-04:** Backup mutations submitted during a workflow checkpoint or active transition are queued, applied after any terminal outcome once no transition is active, and affect only future resolution; queued operations run in submission order and stop at the first application failure.
 - [ ] **BACKUP-05:** Backup persistence failure leaves published state unchanged and exact no-ops do not write.
 
 ### Integration Evidence
