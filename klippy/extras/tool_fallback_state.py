@@ -157,6 +157,42 @@ class FallbackState:
         mappings = {name: name for name in self.tools}
         return self._canonical(self.tools, mappings)
 
+    def with_backups(self, physical, ordered_backups):
+        current = self._require_tool(physical)
+        backups = self._validate_backups(physical, ordered_backups)
+        return self._replace_tool(
+            physical,
+            ToolState(
+                current.loaded, current.purged, current.failed, backups),
+        )
+
+    def with_all_backups(self, backups_by_tool):
+        if type(backups_by_tool) is not dict:
+            raise StateValidationError(
+                "All-tool backups must be an object")
+        if set(backups_by_tool) != set(self.tools):
+            raise StateValidationError(
+                "All-tool backups must contain exactly one entry for every "
+                "tool")
+        normalized = {
+            physical: self._validate_backups(
+                physical, backups_by_tool[physical])
+            for physical in self.tools
+        }
+        if all(self.tools[physical].backups == normalized[physical]
+               for physical in self.tools):
+            return self
+        tools = {
+            physical: ToolState(
+                current.loaded,
+                current.purged,
+                current.failed,
+                normalized[physical],
+            )
+            for physical, current in self.tools.items()
+        }
+        return self._canonical(tools, self.mappings)
+
     def with_filament_loaded(self, physical):
         current = self._require_tool(physical)
         return self._replace_tool(
@@ -209,6 +245,34 @@ class FallbackState:
             raise StateValidationError(
                 "Physical state references unknown tool %s" % (physical,))
         return self.tools[physical]
+
+    def _validate_backups(self, physical, ordered_backups):
+        self._require_tool(physical)
+        try:
+            backups = tuple(ordered_backups)
+        except TypeError:
+            raise StateValidationError(
+                "Tool %s backups must be a collection" % (physical,))
+        malformed = [
+            backup for backup in backups
+            if type(backup) is not str or not TOOL_NAME_RE.fullmatch(backup)
+        ]
+        if malformed:
+            raise StateValidationError(
+                "Tool %s backups must contain canonical tool names" %
+                (physical,))
+        unknown = [backup for backup in backups if backup not in self.tools]
+        if unknown:
+            raise StateValidationError(
+                "Tool %s references unknown backup tool(s): %s" %
+                (physical, ", ".join(str(item) for item in unknown)))
+        if physical in backups:
+            raise StateValidationError(
+                "Tool %s cannot reference itself as a backup" % (physical,))
+        if len(set(backups)) != len(backups):
+            raise StateValidationError(
+                "Tool %s contains duplicate backup references" % (physical,))
+        return backups
 
     def _replace_tool(self, physical, replacement):
         current = self._require_tool(physical)

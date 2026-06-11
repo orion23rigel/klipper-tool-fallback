@@ -4,6 +4,7 @@ import os
 import pytest
 
 from klippy.extras import tool_fallback_state as state_module
+from klippy.extras.tool_fallback import resolve_backup_graph
 from klippy.extras.tool_fallback_config import ToolConfig
 from klippy.extras.tool_fallback_state import (
     FallbackState,
@@ -180,6 +181,103 @@ def test_mapping_mutation_no_ops_return_existing_state():
     assert mapped.with_mapping("T0", "T2") is mapped
     assert mapped.with_identity_mapping("T1") is mapped
     assert identity.with_identity_mappings() is identity
+
+
+def test_with_backups_replaces_reorders_and_clears_only_target_policy():
+    state = FallbackState.from_dict(valid_dict())
+
+    replaced = state.with_backups("T0", ["T1", "T2"])
+    cleared = replaced.with_backups("T0", ())
+
+    assert replaced.tools["T0"].backups == ("T1", "T2")
+    assert cleared.tools["T0"].backups == ()
+    assert replaced.tools["T0"].loaded is True
+    assert replaced.tools["T0"].purged is True
+    assert replaced.tools["T0"].failed is False
+    assert replaced.tools["T1"] is state.tools["T1"]
+    assert replaced.tools["T2"] is state.tools["T2"]
+    assert replaced.mappings == state.mappings
+    assert state.tools["T0"].backups == ("T2", "T1")
+
+
+def test_with_backups_supports_restore_shaped_replacement_and_no_op_identity():
+    state = FallbackState.from_dict(valid_dict())
+    defaults = configured(
+        ("T0", ("T1", "T2")), ("T1", ()), ("T2", ("T1",)))
+
+    restored = state.with_backups("T0", defaults["T0"].backups)
+
+    assert restored.tools["T0"].backups == ("T1", "T2")
+    assert state.with_backups("T0", ["T2", "T1"]) is state
+
+
+def test_with_all_backups_returns_one_complete_canonical_immutable_candidate():
+    state = FallbackState.from_dict(valid_dict())
+
+    candidate = state.with_all_backups({
+        "T2": ("T0",),
+        "T0": ["T1"],
+        "T1": ("T2", "T0"),
+    })
+
+    assert candidate is not state
+    assert list(candidate.tools) == ["T0", "T1", "T2"]
+    assert candidate.tools["T0"].backups == ("T1",)
+    assert candidate.tools["T1"].backups == ("T2", "T0")
+    assert candidate.tools["T2"].backups == ("T0",)
+    assert {
+        name: (tool.loaded, tool.purged, tool.failed)
+        for name, tool in candidate.tools.items()
+    } == {
+        name: (tool.loaded, tool.purged, tool.failed)
+        for name, tool in state.tools.items()
+    }
+    assert candidate.mappings == state.mappings
+    assert candidate.version == 1
+    with pytest.raises(TypeError):
+        candidate.tools["T0"] = state.tools["T0"]
+
+
+def test_with_all_backups_exact_no_op_returns_existing_state():
+    state = FallbackState.from_dict(valid_dict())
+
+    assert state.with_all_backups({
+        name: list(tool.backups) for name, tool in state.tools.items()
+    }) is state
+
+
+@pytest.mark.parametrize(("method", "args", "message"), [
+    ("with_backups", ("T9", ()), "unknown tool T9"),
+    ("with_backups", ("T0", ({"tool": "T1"},)), "canonical tool names"),
+    ("with_backups", ("T0", ("T9",)), "unknown backup tool"),
+    ("with_backups", ("T0", ("T1", "T1")), "duplicate backup"),
+    ("with_backups", ("T0", ("T0",)), "reference itself"),
+    ("with_all_backups", ({"T0": (), "T1": ()},), "exactly one entry"),
+    ("with_all_backups", ({
+        "T0": ("T1",), "T1": ("T2",), "T2": ("T9",),
+    },), "unknown backup tool"),
+])
+def test_backup_candidates_reject_malformed_unknown_duplicate_and_self(
+        method, args, message):
+    state = FallbackState.from_dict(valid_dict())
+
+    with pytest.raises(StateValidationError, match=message):
+        getattr(state, method)(*args)
+
+    assert state.to_dict() == valid_dict()
+
+
+def test_cross_tool_backup_cycle_is_allowed_and_resolver_remains_loop_safe():
+    state = FallbackState.from_dict(valid_dict()).with_all_backups({
+        "T0": ("T1",),
+        "T1": ("T2",),
+        "T2": ("T0",),
+    })
+
+    report = resolve_backup_graph(state, "T1")
+
+    assert report.candidate == "T2"
+    assert state.tools["T2"].backups == ("T0",)
 
 
 @pytest.mark.parametrize(("method", "expected"), [
