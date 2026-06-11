@@ -76,6 +76,12 @@ class BackupOperation:
     backups: object = None
 
 
+@dataclass(frozen=True)
+class QueuedBackupOperation:
+    sequence: int
+    operation: BackupOperation
+
+
 def resolve_backup_graph(state, failed_tool, unknown_authority=()):
     unknown_authority = frozenset(unknown_authority)
     evaluated = []
@@ -142,8 +148,14 @@ class ToolFallback:
         self._heaters = {}
         self._workflow_checkpoint = None
         self._workflow_generation = 0
+        self._backup_operation_queue = []
+        self._backup_operation_sequence = 0
+        self._backup_drain_in_progress = False
+        self._last_backup_drain_failure = None
         self.printer.register_event_handler(
             "klippy:ready", self._handle_ready)
+        self.printer.register_event_handler(
+            "klippy:disconnect", self._handle_disconnect)
         self.gcode.register_command(
             "SHOW_TOOL_FALLBACK_STATE", self.cmd_SHOW_TOOL_FALLBACK_STATE,
             desc="Show canonical tool fallback state")
@@ -230,6 +242,8 @@ class ToolFallback:
         snapshot["transition_active"] = self._transition_active
         snapshot["sensor_authority"] = self._sensor_status_snapshot()
         snapshot["workflow"] = self._workflow_status_snapshot()
+        snapshot["backup_operation_queue"] = (
+            self._backup_queue_status_snapshot())
         return snapshot
 
     def cmd_SHOW_TOOL_FALLBACK_STATE(self, gcmd):
@@ -365,6 +379,13 @@ class ToolFallback:
         self._physical_handlers = MappingProxyType(physical_handlers)
         self._heaters = MappingProxyType(heaters)
         self._initialize_sensor_runtime(normalized.tools)
+
+    def _handle_disconnect(self):
+        if self._backup_operation_queue:
+            self.gcode.respond_info(
+                "Discarding %d queued tool fallback backup operation(s) on "
+                "disconnect; resubmit them after restart" %
+                (len(self._backup_operation_queue),))
 
     def _resolve_heaters(self, tools):
         manager = self.printer.lookup_object("heaters")
@@ -1284,13 +1305,18 @@ class ToolFallback:
             "Unknown backup operation %s" % (operation.operation,))
 
     def _apply_backup_operation(self, gcmd, operation):
+        if getattr(self, "_notification_in_progress", False):
+            raise gcmd.error(
+                "Backup policy change is unavailable during notification "
+                "delivery")
         if (self._workflow_checkpoint is not None
                 or self._transition_active
-                or getattr(self, "_notification_in_progress", False)
-                or getattr(self, "_backup_operations", ())):
-            raise gcmd.error(
-                "Backup policy change cannot apply immediately while tool "
-                "fallback work is active")
+                or self._backup_operation_queue):
+            self._enqueue_backup_operation(gcmd, operation)
+            return
+        self._apply_immediate_backup_operation(gcmd, operation)
+
+    def _apply_immediate_backup_operation(self, gcmd, operation):
         try:
             candidate = self._backup_candidate(operation)
         except tool_fallback_state.StateValidationError as error:
@@ -1311,6 +1337,98 @@ class ToolFallback:
             "%s persisted: %s" %
             (self._backup_operation_subject(operation),
              self._format_backup_policy(operation)))
+
+    def _enqueue_backup_operation(self, gcmd, operation):
+        self._backup_operation_sequence += 1
+        queued = QueuedBackupOperation(
+            self._backup_operation_sequence, operation)
+        self._backup_operation_queue.append(queued)
+        checkpoint = self._workflow_checkpoint
+        if checkpoint is not None:
+            active_stage = checkpoint.stage
+        elif self._transition_active:
+            active_stage = "route_transition"
+        else:
+            active_stage = "retained_queue"
+        gcmd.respond_info(
+            "Queued backup operation position=%d sequence=%d operation=%s "
+            "target=%s stage=%s" %
+            (len(self._backup_operation_queue), queued.sequence,
+             operation.operation, operation.tool or "all", active_stage))
+        self._drain_backup_operations()
+
+    def _backup_drain_is_safe(self):
+        checkpoint = self._workflow_checkpoint
+        return (
+            not self._transition_active
+            and not getattr(self, "_notification_in_progress", False)
+            and not self._backup_drain_in_progress
+            and (checkpoint is None or checkpoint.stage == "blocked")
+        )
+
+    def _drain_backup_operations(self):
+        if not self._backup_operation_queue or not self._backup_drain_is_safe():
+            return
+        applied = 0
+        no_op = 0
+        failed = 0
+        self._backup_drain_in_progress = True
+        try:
+            while self._backup_operation_queue:
+                queued = self._backup_operation_queue[0]
+                operation = queued.operation
+                try:
+                    candidate = self._backup_candidate(operation)
+                    if candidate is self.state:
+                        no_op += 1
+                        result = "no-op"
+                    else:
+                        self._persist_state(candidate)
+                        applied += 1
+                        result = "applied"
+                except Exception as error:
+                    failed = 1
+                    self._last_backup_drain_failure = {
+                        "sequence": queued.sequence,
+                        "operation": operation.operation,
+                        "target": operation.tool or "all",
+                        "error": str(error),
+                    }
+                    self.gcode.respond_info(
+                        "Queued backup operation sequence=%d operation=%s "
+                        "target=%s failed: %s; remaining=%d" %
+                        (queued.sequence, operation.operation,
+                         operation.tool or "all", error,
+                         len(self._backup_operation_queue)))
+                    break
+                self._backup_operation_queue.pop(0)
+                self._last_backup_drain_failure = None
+                self.gcode.respond_info(
+                    "Queued backup operation sequence=%d operation=%s "
+                    "target=%s %s: %s" %
+                    (queued.sequence, operation.operation,
+                     operation.tool or "all", result,
+                     self._format_backup_policy(operation)))
+        finally:
+            self._backup_drain_in_progress = False
+        self.gcode.respond_info(
+            "Backup queue drain totals: applied=%d no_op=%d failed=%d "
+            "remaining=%d" %
+            (applied, no_op, failed, len(self._backup_operation_queue)))
+
+    def _backup_queue_status_snapshot(self):
+        oldest_sequence = (
+            self._backup_operation_queue[0].sequence
+            if self._backup_operation_queue else None)
+        return {
+            "depth": len(self._backup_operation_queue),
+            "oldest_sequence": oldest_sequence,
+            "next_sequence": self._backup_operation_sequence + 1,
+            "drain_in_progress": self._backup_drain_in_progress,
+            "last_failure": (
+                None if self._last_backup_drain_failure is None
+                else dict(self._last_backup_drain_failure)),
+        }
 
     def _backup_operation_subject(self, operation):
         if operation.operation == "reset":

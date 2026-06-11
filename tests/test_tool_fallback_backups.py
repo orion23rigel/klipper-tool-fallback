@@ -231,23 +231,162 @@ def test_changed_priority_affects_only_a_later_resolver_call(
     assert resolve_backup_graph(extension.state, "T0").candidate == "T2"
 
 
-@pytest.mark.parametrize("active", ["workflow", "transition"])
-def test_non_immediate_contexts_are_rejected_without_action_until_queue_plan(
-        active, config_factory, prefix_config_factory, printer, tmp_path):
+@pytest.mark.parametrize(("active", "stage"), [
+    ("workflow", "debouncing"),
+    ("workflow", "heating"),
+    ("workflow", "heating_timeout"),
+    ("transition", "route_transition"),
+])
+def test_active_contexts_queue_with_receipt_without_immediate_action(
+        active, stage, config_factory, prefix_config_factory, printer, tmp_path):
     events = []
     extension = load_extension(
         config_factory, prefix_config_factory, printer, tmp_path / "state.json",
         events=events)
     if active == "workflow":
         extension._workflow_checkpoint = tool_fallback.WorkflowCheckpoint(
-            "automatic_fallback", "heating", 1)
+            "automatic_fallback", stage, 1)
     else:
         extension._transition_active = True
     original = extension.state
 
-    with pytest.raises(CommandError, match="cannot apply immediately"):
-        invoke(printer, "SET_TOOL_BACKUPS", TOOL="T0", BACKUPS="T2")
+    receipt = invoke(printer, "SET_TOOL_BACKUPS", TOOL="T0", BACKUPS="T2")
 
     assert extension.state is original
+    assert len(extension._backup_operation_queue) == 1
+    assert "position=1 sequence=1 operation=set target=T0 stage=%s" % (
+        stage,) in receipt.responses[0]
     assert events == []
     assert printer.gcode.script_events == []
+
+
+def test_submission_after_blocked_terminal_checkpoint_receives_then_drains(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    extension._workflow_checkpoint = tool_fallback.WorkflowCheckpoint(
+        "automatic_fallback", "blocked", 1)
+
+    receipt = invoke(
+        printer, "SET_TOOL_BACKUPS", TOOL="T0", BACKUPS="T2")
+
+    assert receipt.responses == [
+        "Queued backup operation position=1 sequence=1 operation=set "
+        "target=T0 stage=blocked"
+    ]
+    assert extension.state.tools["T0"].backups == ("T2",)
+    assert extension._backup_operation_queue == []
+    assert "sequence=1 operation=set target=T0 applied" in (
+        printer.gcode.responses[-2])
+
+
+def test_queued_operations_apply_distinctly_fifo_against_latest_state(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    extension._workflow_checkpoint = tool_fallback.WorkflowCheckpoint(
+        "automatic_fallback", "heating", 1)
+    saved_policies = []
+    real_save = extension._state_store.save
+
+    def observe_save(candidate):
+        saved_policies.append(candidate.tools["T0"].backups)
+        return real_save(candidate)
+
+    monkeypatch.setattr(extension._state_store, "save", observe_save)
+    invoke(printer, "SET_TOOL_BACKUPS", TOOL="T0", BACKUPS="T2")
+    invoke(printer, "SET_TOOL_BACKUPS", TOOL="T0", BACKUPS="")
+    invoke(printer, "RESTORE_TOOL_BACKUPS", TOOL="T0")
+    extension._workflow_checkpoint = None
+
+    extension._drain_backup_operations()
+
+    assert saved_policies == [("T2",), (), ("T1", "T2")]
+    assert extension.state.tools["T0"].backups == ("T1", "T2")
+    assert extension._backup_operation_queue == []
+
+
+def test_queued_reset_and_no_op_are_processed_without_no_op_save(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    extension._workflow_checkpoint = tool_fallback.WorkflowCheckpoint(
+        "automatic_fallback", "heating", 1)
+    saves = []
+    real_save = extension._state_store.save
+
+    def observe_save(candidate):
+        saves.append(candidate)
+        return real_save(candidate)
+
+    monkeypatch.setattr(extension._state_store, "save", observe_save)
+    invoke(printer, "SET_TOOL_BACKUPS", TOOL="T0", BACKUPS="T1,T2")
+    invoke(printer, "RESET_TOOL_BACKUPS")
+    extension._workflow_checkpoint = None
+
+    extension._drain_backup_operations()
+
+    assert saves == []
+    assert "no_op=2" in printer.gcode.responses[-1]
+
+
+def test_first_queue_save_failure_retains_suffix_and_retry_preserves_order(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json")
+    extension._workflow_checkpoint = tool_fallback.WorkflowCheckpoint(
+        "automatic_fallback", "heating", 1)
+    invoke(printer, "SET_TOOL_BACKUPS", TOOL="T0", BACKUPS="T2")
+    invoke(printer, "SET_TOOL_BACKUPS", TOOL="T0", BACKUPS="")
+    real_save = extension._state_store.save
+    attempts = []
+    fail_once = [True]
+
+    def injected_save(candidate):
+        attempts.append(candidate.tools["T0"].backups)
+        if fail_once[0]:
+            fail_once[0] = False
+            raise OSError("injected queued save failure")
+        return real_save(candidate)
+
+    monkeypatch.setattr(extension._state_store, "save", injected_save)
+    extension._workflow_checkpoint = None
+    extension._drain_backup_operations()
+
+    assert [item.sequence for item in extension._backup_operation_queue] == [1, 2]
+    assert extension.state.tools["T0"].backups == ("T1", "T2")
+    assert extension.get_status(None)["backup_operation_queue"]["last_failure"][
+        "sequence"] == 1
+
+    invoke(printer, "RESTORE_TOOL_BACKUPS", TOOL="T0")
+
+    assert attempts == [("T2",), ("T2",), (), ("T1", "T2")]
+    assert extension._backup_operation_queue == []
+    assert extension.state.tools["T0"].backups == ("T1", "T2")
+    assert extension.get_status(None)["backup_operation_queue"] == {
+        "depth": 0,
+        "oldest_sequence": None,
+        "next_sequence": 4,
+        "drain_in_progress": False,
+        "last_failure": None,
+    }
+
+
+def test_queue_is_runtime_only_json_safe_and_disconnect_warns(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    path = tmp_path / "state.json"
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, path)
+    extension._workflow_checkpoint = tool_fallback.WorkflowCheckpoint(
+        "automatic_fallback", "heating", 1)
+    invoke(printer, "SET_TOOL_BACKUPS", TOOL="T0", BACKUPS="T2")
+
+    snapshot = extension.get_status(None)
+    assert snapshot["backup_operation_queue"]["depth"] == 1
+    assert snapshot["backup_operation_queue"]["oldest_sequence"] == 1
+    assert '"depth": 1' in __import__("json").dumps(snapshot)
+    assert "backup_operation_queue" not in StateStore(str(path)).load().to_dict()
+
+    printer.send_event("klippy:disconnect")
+
+    assert "Discarding 1 queued" in printer.gcode.responses[-1]
