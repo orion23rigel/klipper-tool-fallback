@@ -46,16 +46,25 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| NOTIFY-01 through NOTIFY-03 | TBD | Pending |
-| BACKUP-01 through BACKUP-05 | TBD | Pending |
-| EXAMPLE-01, UAT-01 | TBD | Pending |
-| CI-01, RELEASE-01, SCOPE-01 | TBD | Pending |
+| NOTIFY-01 | Phase 5 | Pending |
+| NOTIFY-02 | Phase 5 | Pending |
+| NOTIFY-03 | Phase 5 | Pending |
+| BACKUP-01 | Phase 5 | Pending |
+| BACKUP-02 | Phase 5 | Pending |
+| BACKUP-03 | Phase 5 | Pending |
+| BACKUP-04 | Phase 5 | Pending |
+| BACKUP-05 | Phase 5 | Pending |
+| EXAMPLE-01 | Phase 6 | Pending |
+| UAT-01 | Phase 6 | Pending |
+| CI-01 | Phase 7 | Pending |
+| RELEASE-01 | Phase 7 | Pending |
+| SCOPE-01 | Phase 7 | Pending |
 
 **Coverage:**
 - v1.1 requirements: 13 total
-- Mapped to phases: 0
-- Unmapped: 13
+- Mapped to phases: 13
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-06-11*
-*Last updated: 2026-06-11 after v1.1 research*
+*Last updated: 2026-06-11 after v1.1 roadmap creation*
