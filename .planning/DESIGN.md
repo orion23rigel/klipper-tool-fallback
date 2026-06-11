@@ -8,6 +8,7 @@ state_path: ~/printer_data/config/tool_fallback_state.json
 debounce_time: 1.0
 pause_gcode: PAUSE
 resume_gcode: RESUME
+purge_gcode: _TOOL_FALLBACK_PURGE
 notify_gcode: _TOOL_FALLBACK_NOTIFY
 selection_timeout: 120
 heating_timeout: 300
@@ -30,7 +31,7 @@ Each sensor must explicitly hook the extension:
 [filament_switch_sensor T0_sensor]
 pause_on_runout: True
 runout_gcode:
-  TOOL_FALLBACK_RUNOUT TOOL=T0
+  TOOL_FALLBACK_RUNOUT TOOL=T0 PAUSE_OWNED=1
 insert_gcode:
   TOOL_FALLBACK_INSERT TOOL=T0
 ```
@@ -125,15 +126,14 @@ tools to prevent loops and duplicate attempts.
 - `RESTORE_TOOL TOOL=T0`: map logical T0 back to physical T0 using the same active-print
   workflow when applicable.
 - `RESET_TOOL_MAPPINGS`: restore all identity mappings.
-- `SET_TOOL_BACKUPS TOOL=T0 BACKUPS=T1,T3,T2`
-- `ADD_TOOL_BACKUP TOOL=T0 BACKUP=T4`
-- `REMOVE_TOOL_BACKUP TOOL=T0 BACKUP=T3`
-- `CLEAR_TOOL_BACKUPS TOOL=T0`
 - `SHOW_TOOL_FALLBACK_STATE`
 
-## Notifications
+Runtime backup-list mutation commands are planned beyond v1.0. v1.0 preserves and
+traverses persisted ordered backup lists initialized from configuration.
 
-The extension invokes configurable `notify_gcode` only for:
+## Planned Notifications
+
+External notification invocation is planned beyond v1.0 for:
 
 - successful automatic fallback;
 - failed automatic fallback;

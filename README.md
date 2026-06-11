@@ -3,14 +3,11 @@
 Independent Klipper extension for persistent logical-to-physical tool routing,
 filament-state tracking, purge lifecycle management, and automatic backup-tool fallback.
 
-## Phase 1 Foundation
+## v1.0 Features
 
-Phase 1 provides strict configuration validation, versioned atomic JSON persistence,
-startup reconciliation against configured tools, and read-only state inspection.
-
-Routing, `Tn` command interception, filament-sensor handling, purging, and automatic
-fallback are planned but are **not implemented in Phase 1**. Configuring this extension
-does not yet change tool-selection or runout behavior.
+The extension provides strict configuration validation, versioned atomic JSON
+persistence, logical `Tn` routing, filament-sensor state tracking, guarded purge
+lifecycle management, active-route remapping, and automatic backup-tool fallback.
 
 ## Installation
 
@@ -33,7 +30,7 @@ state_path: ~/printer_data/config/tool_fallback_state.json
 debounce_time: 1.0
 pause_gcode: PAUSE
 resume_gcode: RESUME
-purge_gcode: PURGE_TOOL
+purge_gcode: _TOOL_FALLBACK_PURGE
 notify_gcode: _TOOL_FALLBACK_NOTIFY
 selection_timeout: 120
 heating_timeout: 300
@@ -54,9 +51,10 @@ Every managed physical tool requires one `[tool_fallback Tn]` section. Tool name
 use canonical uppercase names such as `T0` or `T12`. Backup entries are ordered and must
 reference configured tools.
 
-The adapter names and timing values are validated in Phase 1 and reserved for later
-workflow phases. In particular, `purge_gcode` configures the future purge adapter but is
-not invoked yet.
+`purge_gcode` must name a distinct implementation macro; it cannot be `PURGE_TOOL`
+because `PURGE_TOOL` is the extension's public command. Sensor `runout_gcode` should
+invoke `TOOL_FALLBACK_RUNOUT TOOL=Tn PAUSE_OWNED=1` when the sensor's
+`pause_on_runout` behavior owns the pause.
 
 ## Persistent State
 

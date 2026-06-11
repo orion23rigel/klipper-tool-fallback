@@ -796,6 +796,34 @@ def test_active_transition_pause_failure_prevents_warning_selection_and_save(
     assert printer.gcode.script_events == ["PAUSE"]
 
 
+def test_active_transition_blocked_source_stage_aborts_before_selection(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    events = []
+    handlers = {
+        name: physical_handler_spy(name, events)
+        for name in ("T0", "T1", "T2")
+    }
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        handlers=handlers)
+    printer.send_event("klippy:ready")
+    printer.gcode.invoke_command("T0")
+    mark_all_tools_purged(extension)
+    events.clear()
+    printer.heaters.heaters["extruder"].target = 0.0
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    with pytest.raises(CommandError, match="target must be finite"):
+        printer.gcode.invoke_command(
+            "REMAP_TOOL", FakeGCmd({"LOGICAL": "T0", "PHYSICAL": "T2"}))
+
+    assert events == []
+    assert extension.state.mappings["T0"] == "T0"
+    assert extension._selected_physical_tool == "T0"
+    assert extension._workflow_checkpoint.stage == "blocked"
+    assert printer.gcode.script_events == ["PAUSE"]
+
+
 def test_active_transition_selection_failure_preserves_state_and_stays_paused(
         config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
     events = []

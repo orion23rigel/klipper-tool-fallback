@@ -91,6 +91,10 @@ implementation, commit history, completion record, and fresh verification result
 ## Issues Encountered
 
 - Existing `pytest-asyncio` deprecation warnings remain; no behavioral failures occurred.
+- A milestone integration audit found blocked-stage continuation, missing purge-overrun
+  enforcement, lost resume-failure checkpoints, and missing logical-route publication.
+  These and a guarded-resume blocked-stage continuation were corrected with regression
+  coverage; the full suite now passes 260 tests.
 
 ## Self-Check: PASSED
 

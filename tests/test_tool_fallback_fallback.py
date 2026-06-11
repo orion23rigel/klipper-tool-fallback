@@ -617,10 +617,6 @@ def test_complete_fallback_success_ordering(config_factory,
     extension._active_logical_tool = "T0"
     printer.add_object("print_stats", FakePrintStats("printing"))
 
-    print(f"DEBUG: before runout, selected={extension._selected_physical_tool}")
-    print(f"DEBUG: print_state={printer.lookup_object('print_stats').get_status(printer.reactor.monotonic()).get('state')}")
-    print(f"DEBUG: _print_is_active={extension._print_is_active()}")
-    print(f"DEBUG: pause_gcode={extension.config.global_config.pause_gcode}")
     printer.gcode.invoke_command(
         "TOOL_FALLBACK_RUNOUT",
         FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
@@ -711,10 +707,10 @@ def test_fallback_uses_current_canonical_state_for_mapping_persistence(
     def capture_persist(candidate):
         persist_call_count[0] += 1
         # The fallback's persist call (second call, after debounce confirmation)
-        # should use the current canonical state, not a snapshot.
+        # should preserve current canonical tool state while publishing the route.
         if persist_call_count[0] >= 2:
-            assert candidate is extension.state, (
-                "Fallback should persist current canonical state, not a snapshot")
+            assert candidate.tools == extension.state.tools
+            assert candidate.mappings["T0"] == "T1"
         return original_persist(candidate)
 
     extension._persist_state = capture_persist
@@ -831,6 +827,74 @@ def test_fallback_heating_timeout_leaves_recoverable_checkpoint(
 
     assert extension._workflow_checkpoint is not None
     assert extension._workflow_checkpoint.stage == "heating_timeout"
+
+
+def test_guarded_resume_after_heating_timeout_completes_fallback(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    t1_heater = printer.heaters.add_heater(FakeHeater(
+        "extruder1", target=0.0, ready=False, events=printer.heaters.events))
+    extension = _load_fallback_config(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json", {
+            "T0": tool_state(backups=("T1",)),
+            "T1": tool_state(),
+        }, heater_names={"T0": "extruder", "T1": "extruder1"})
+    extension.config = replace(
+        extension.config,
+        global_config=replace(
+            extension.config.global_config, heating_timeout=0.1))
+    printer.heaters.heaters["extruder"].target = 220.0
+    extension._selected_physical_tool = "T0"
+    extension._active_logical_tool = "T0"
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+    printer.reactor.advance(1.0)
+    assert extension._workflow_checkpoint.stage == "heating_timeout"
+
+    t1_heater.ready = True
+    printer.gcode.invoke_command("RESUME", FakeGCmd())
+
+    assert extension._workflow_checkpoint is None
+    assert extension.state.mappings["T0"] == "T1"
+    assert printer.gcode.script_events == ["PAUSE", "RESUME"]
+
+
+def test_guarded_resume_readiness_failure_remains_blocked_without_publishing(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    t1_heater = printer.heaters.add_heater(FakeHeater(
+        "extruder1", target=0.0, ready=False, events=printer.heaters.events))
+    extension = _load_fallback_config(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json", {
+            "T0": tool_state(backups=("T1",)),
+            "T1": tool_state(),
+        }, heater_names={"T0": "extruder", "T1": "extruder1"})
+    extension.config = replace(
+        extension.config,
+        global_config=replace(
+            extension.config.global_config, heating_timeout=0.1))
+    printer.heaters.heaters["extruder"].target = 220.0
+    extension._selected_physical_tool = "T0"
+    extension._active_logical_tool = "T0"
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+    printer.reactor.advance(1.0)
+    assert extension._workflow_checkpoint.stage == "heating_timeout"
+
+    t1_heater.busy_error = RuntimeError("injected guarded readiness failure")
+    printer.gcode.invoke_command("RESUME", FakeGCmd())
+
+    assert extension._workflow_checkpoint.stage == "blocked"
+    assert "guarded readiness failure" in (
+        extension._workflow_checkpoint.failure_reason)
+    assert extension.state.mappings["T0"] == "T0"
+    assert printer.gcode.script_events == ["PAUSE"]
 
 
 def test_fallback_user_owned_pause_never_resumes(
@@ -953,3 +1017,117 @@ def test_fallback_no_rollback_to_failed_tool(config_factory,
 
     assert rollback_events == []
     assert extension._selected_physical_tool == "T1", f"Expected T1, got {extension._selected_physical_tool}, checkpoint={extension._workflow_checkpoint}"
+
+
+def test_fallback_source_shutdown_block_stops_before_selection(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    printer.heaters.add_heater(FakeHeater(
+        "extruder1", target=0.0, ready=True, events=printer.heaters.events))
+    extension = _load_fallback_config(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json", {
+            "T0": tool_state(backups=("T1",)),
+            "T1": tool_state(),
+        }, heater_names={"T0": "extruder", "T1": "extruder1"})
+    printer.heaters.heaters["extruder"].target = 0.0
+    extension._selected_physical_tool = "T0"
+    extension._active_logical_tool = "T0"
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+    printer.reactor.advance(1.0)
+
+    assert extension._workflow_checkpoint.stage == "blocked"
+    assert "target must be finite and above 0.0" in (
+        extension._workflow_checkpoint.failure_reason)
+    assert extension._selected_physical_tool == "T0"
+    assert printer.gcode.script_events == ["PAUSE"]
+
+
+def test_fallback_heater_readiness_error_blocks_before_purge_persist_or_resume(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    destination = printer.heaters.add_heater(FakeHeater(
+        "extruder1", target=0.0, ready=False, events=printer.heaters.events))
+    destination.busy_error = RuntimeError("injected readiness failure")
+    extension = _load_fallback_config(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json", {
+            "T0": tool_state(backups=("T1",)),
+            "T1": tool_state(),
+        }, heater_names={"T0": "extruder", "T1": "extruder1"})
+    printer.heaters.heaters["extruder"].target = 220.0
+    extension._selected_physical_tool = "T0"
+    extension._active_logical_tool = "T0"
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+    printer.reactor.advance(1.0)
+
+    assert extension._workflow_checkpoint.stage == "blocked"
+    assert "readiness failure" in extension._workflow_checkpoint.failure_reason
+    assert extension.state.mappings["T0"] == "T0"
+    assert printer.gcode.script_events == ["PAUSE"]
+
+
+def test_fallback_purge_overrun_blocks_without_publishing_mapping_or_resuming(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    printer.heaters.add_heater(FakeHeater(
+        "extruder1", target=0.0, ready=True, events=printer.heaters.events))
+    extension = _load_fallback_config(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json", {
+            "T0": tool_state(backups=("T1",)),
+            "T1": tool_state(purged=False),
+        }, heater_names={"T0": "extruder", "T1": "extruder1"})
+    extension.config = replace(
+        extension.config,
+        global_config=replace(
+            extension.config.global_config, purge_timeout=0.1))
+    printer.gcode.set_script_duration("_TOOL_FALLBACK_PURGE TOOL=T1", 0.2)
+    printer.heaters.heaters["extruder"].target = 220.0
+    extension._selected_physical_tool = "T0"
+    extension._active_logical_tool = "T0"
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+    printer.reactor.advance(1.0)
+
+    assert extension._workflow_checkpoint.stage == "blocked"
+    assert "exceeded timeout" in extension._workflow_checkpoint.failure_reason
+    assert extension.state.tools["T1"].purged is False
+    assert extension.state.mappings["T0"] == "T0"
+    assert "RESUME" not in printer.gcode.script_events
+
+
+def test_fallback_resume_failure_preserves_visible_blocked_checkpoint(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    printer.heaters.add_heater(FakeHeater(
+        "extruder1", target=0.0, ready=True, events=printer.heaters.events))
+    extension = _load_fallback_config(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json", {
+            "T0": tool_state(backups=("T1",)),
+            "T1": tool_state(),
+        }, heater_names={"T0": "extruder", "T1": "extruder1"})
+    printer.heaters.heaters["extruder"].target = 220.0
+    extension._selected_physical_tool = "T0"
+    extension._active_logical_tool = "T0"
+    printer.add_object("print_stats", FakePrintStats("printing"))
+    printer.gcode.inject_script_failure(
+        "RESUME", CommandError("injected fallback resume failure"))
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+    printer.reactor.advance(1.0)
+
+    assert extension._workflow_checkpoint.stage == "blocked"
+    assert "fallback resume failure" in (
+        extension._workflow_checkpoint.failure_reason)
+    assert extension.state.mappings["T0"] == "T1"

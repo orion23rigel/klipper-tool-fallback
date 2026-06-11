@@ -195,6 +195,9 @@ class FakeGCode:
     def respond_info(self, message):
         self.responses.append(message)
 
+    def error(self, message):
+        return CommandError(message)
+
     def record_workflow_event(self, event, **details):
         self.workflow_events.append((event, details))
 

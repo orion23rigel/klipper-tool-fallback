@@ -429,6 +429,9 @@ class ToolFallback:
         self.gcode.respond_info(reason)
         return blocked
 
+    def _workflow_stage_failed(self, checkpoint):
+        return checkpoint is None or checkpoint.stage == "blocked"
+
     def _capture_and_shutdown_source(self, checkpoint):
         source = checkpoint.current_physical_tool
         heater = self._heaters.get(source)
@@ -785,7 +788,7 @@ class ToolFallback:
 
         # 2. Capture target and shut down failed heater.
         advanced = self._capture_and_shutdown_source(checkpoint)
-        if advanced is None:
+        if self._workflow_stage_failed(advanced):
             return
 
         # 3. Resolve backup graph with one fresh rescan on exhaustion.
@@ -807,13 +810,14 @@ class ToolFallback:
         self._workflow_checkpoint = replace(
             advanced,
             stage="resolving",
+            logical_tool=logical_tool,
             requested_physical_tool=selected,
             graph_report=resolution,
         )
 
         # 4. Preheat backup before physical selection.
         preheated = self._preheat_requested_tool(self._workflow_checkpoint)
-        if preheated is None:
+        if self._workflow_stage_failed(preheated):
             return
 
         # 5. Select backup physically (once, no retry).
@@ -844,7 +848,9 @@ class ToolFallback:
             self._workflow_checkpoint,
             stage="heating", stage_deadline=heating_deadline)
         self._wait_for_heater_readiness(self._workflow_checkpoint)
-        if self._workflow_checkpoint.stage == "heating_timeout":
+        if (self._workflow_checkpoint is None
+                or self._workflow_checkpoint.stage in (
+                    "blocked", "heating_timeout")):
             return
 
         # 7. Conditionally purge the backup tool.
@@ -863,7 +869,7 @@ class ToolFallback:
                 return
 
         # 8. Merge and persist logical mapping from current canonical state.
-        candidate = self._merge_mapping_candidate(self.state)
+        candidate = self.state.with_mapping(logical_tool, selected)
         try:
             self._persist_state(candidate)
         except OSError as error:
@@ -874,6 +880,7 @@ class ToolFallback:
             return
 
         # 9. Clear checkpoint and resume only when owned.
+        completed = self._workflow_checkpoint
         self._workflow_checkpoint = None
         if checkpoint.pause_owned:
             try:
@@ -881,10 +888,7 @@ class ToolFallback:
                     self.config.global_config.resume_gcode)
             except Exception as error:
                 self._block_workflow(
-                    replace(self._workflow_checkpoint,
-                            stage="blocked",
-                            failure_reason="Resume after fallback failed: %s" %
-                            (error,)),
+                    completed,
                     "Resume after fallback failed: %s" % (error,))
 
     def _checkpoint_matches(self, generation, stage):
@@ -1002,8 +1006,19 @@ class ToolFallback:
         if not checkpoint.pause_owned:
             raise gcmd.error("Resume is not owned by fallback; refusing guarded resume")
 
-        # Attempt to wait for heater readiness again
+        # A guarded operator retry gets a fresh configured heating window.
+        checkpoint = replace(
+            checkpoint,
+            stage="heating",
+            stage_deadline=(
+                self.printer.get_reactor().monotonic()
+                + self.config.global_config.heating_timeout),
+            failure_reason=None)
+        self._workflow_checkpoint = checkpoint
         self._wait_for_heater_readiness(checkpoint)
+        if (self._workflow_checkpoint is not None
+                and self._workflow_checkpoint.stage == "blocked"):
+            return None
         # If still timed out, do not resume
         if self._workflow_checkpoint is not None and self._workflow_checkpoint.stage == "heating_timeout":
             self.gcode.respond_info("Selected backup heater not ready; resume deferred")
@@ -1023,7 +1038,8 @@ class ToolFallback:
                 return None
 
         # Persist mapping candidate
-        candidate = self._merge_mapping_candidate(self.state)
+        candidate = self.state.with_mapping(
+            checkpoint.logical_tool, requested)
         try:
             self._persist_state(candidate)
         except OSError as error:
@@ -1116,7 +1132,13 @@ class ToolFallback:
             return
         adapter = "%s TOOL=%s" % (
             self.config.global_config.purge_gcode, physical_tool)
+        reactor = self.printer.get_reactor()
+        deadline = (
+            reactor.monotonic() + self.config.global_config.purge_timeout)
         self.gcode.run_script_from_command(adapter)
+        if reactor.monotonic() > deadline:
+            raise error_factory(
+                "Purge of tool %s exceeded timeout" % (physical_tool,))
         if candidate is self.state:
             return
         try:
@@ -1274,19 +1296,19 @@ class ToolFallback:
 
         # 1. Capture target temperature from source and shut it down.
         advanced = self._capture_and_shutdown_source(checkpoint)
-        if advanced is None:
+        if self._workflow_stage_failed(advanced):
             # _capture_and_shutdown_source will have set a blocked checkpoint
             # when appropriate; surface a CLI-visible error to abort the
             # transition.
-            raise gcmd.error("Unable to capture and shutdown source heater")
+            raise gcmd.error(advanced.failure_reason)
 
         # 2. Preheat requested tool to captured target.
         # Copy requested_physical_tool into the checkpoint expected by
         # _preheat_requested_tool.
         advanced = replace(advanced, requested_physical_tool=requested_physical)
         preheated = self._preheat_requested_tool(advanced)
-        if preheated is None:
-            raise gcmd.error("Unable to preheat requested tool %s" % (requested_physical,))
+        if self._workflow_stage_failed(preheated):
+            raise gcmd.error(preheated.failure_reason)
 
         # 3. Wait for heater readiness, enforcing heating_timeout.
         heating_deadline = (
@@ -1295,7 +1317,11 @@ class ToolFallback:
         preheated = replace(preheated, stage="preheated", stage_deadline=heating_deadline)
         self._workflow_checkpoint = preheated
         self._wait_for_heater_readiness(preheated)
-        if self._workflow_checkpoint is not None and self._workflow_checkpoint.stage == "heating_timeout":
+        if (self._workflow_checkpoint is not None
+                and self._workflow_checkpoint.stage == "blocked"):
+            raise gcmd.error(self._workflow_checkpoint.failure_reason)
+        if (self._workflow_checkpoint is not None
+                and self._workflow_checkpoint.stage == "heating_timeout"):
             raise gcmd.error("Selected backup heater did not reach readiness before timeout")
 
         # Clear the transient checkpoint now that preselection stages completed

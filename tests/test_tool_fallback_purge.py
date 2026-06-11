@@ -1,4 +1,5 @@
 import pytest
+from dataclasses import replace
 
 from conftest import CommandError, FakeFilamentSensor, FakeGCmd, FakePrintStats
 from klippy.extras import tool_fallback
@@ -80,6 +81,23 @@ def test_PURGE_TOOL_adapter_failure_leaves_tool_unpurged(
         "_TOOL_FALLBACK_PURGE TOOL=T0", CommandError("adapter failed"))
 
     with pytest.raises(CommandError, match="adapter failed"):
+        printer.gcode.invoke_command("PURGE_TOOL", FakeGCmd({"TOOL": "T0"}))
+
+    assert extension.state.tools["T0"].purged is False
+
+
+def test_PURGE_TOOL_post_return_overrun_leaves_tool_unpurged(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path / "state.json",
+        {"T0": tool_state()})
+    extension.config = replace(
+        extension.config,
+        global_config=replace(
+            extension.config.global_config, purge_timeout=0.1))
+    printer.gcode.set_script_duration("_TOOL_FALLBACK_PURGE TOOL=T0", 0.2)
+
+    with pytest.raises(CommandError, match="exceeded timeout"):
         printer.gcode.invoke_command("PURGE_TOOL", FakeGCmd({"TOOL": "T0"}))
 
     assert extension.state.tools["T0"].purged is False
