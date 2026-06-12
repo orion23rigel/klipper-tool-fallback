@@ -17,7 +17,8 @@ NOTIFICATION_EVENTS = frozenset((
 ))
 REASON_CODES = frozenset((
     "SUCCESS", "TRANSIENT_CLEARED", "GRAPH_EXHAUSTED", "PURGE_FAILED",
-    "MAPPING_PERSIST_FAILED", "RESUME_FAILED", "UNEXPECTED_FAILURE",
+    "HEATING_TIMEOUT", "MAPPING_PERSIST_FAILED", "RESUME_FAILED",
+    "UNEXPECTED_FAILURE",
 ))
 
 
@@ -546,7 +547,8 @@ class ToolFallback:
         )
         script = self.config.global_config.notify_gcode + " " + " ".join(
             "%s=%s" % (name, token(value)) for name, value in fields)
-        if event.reason_detail is not None:
+        if (event.reason_code == "UNEXPECTED_FAILURE"
+                and event.reason_detail is not None):
             script += " REASON_DETAIL=%s" % (
                 self._sanitize_reason_detail(event.reason_detail),)
         return script

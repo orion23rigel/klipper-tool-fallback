@@ -63,6 +63,18 @@ def test_payload_has_fixed_order_sentinel_and_bounded_safe_detail(
     assert "#" not in script
 
 
+def test_known_reason_never_transports_detail(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path)
+
+    extension._attempt_notification(event(
+        reason_code="PURGE_FAILED", reason_detail="must stay local"))
+
+    assert "REASON_CODE=PURGE_FAILED" in printer.gcode.script_events[-1]
+    assert "REASON_DETAIL" not in printer.gcode.script_events[-1]
+
+
 def test_generation_latches_first_complete_event_and_rejects_conflicts(
         config_factory, prefix_config_factory, printer, tmp_path):
     extension = load_extension(
@@ -151,6 +163,64 @@ def test_terminal_failure_is_visible_before_notification_and_drain(
     assert extension._backup_operation_queue == []
     assert "EVENT=FALLBACK_FAILURE" in printer.gcode.script_events[-1]
     assert "REASON_CODE=GRAPH_EXHAUSTED" in printer.gcode.script_events[-1]
+
+
+def test_adapter_exception_does_not_prevent_terminal_queue_drain(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path)
+    checkpoint = WorkflowCheckpoint(
+        "automatic_fallback", "heating", 11,
+        logical_tool="T0", current_physical_tool="T0",
+        requested_physical_tool="T1")
+    extension._workflow_checkpoint = checkpoint
+    printer.gcode.invoke_command(
+        "SET_TOOL_BACKUPS", FakeGCmd({"TOOL": "T0", "BACKUPS": ""}))
+
+    def fail_adapter(script):
+        raise CommandError("injected adapter failure")
+
+    printer.gcode.set_script_callback("MY_NOTIFY", fail_adapter)
+
+    extension._block_workflow(
+        checkpoint, "purge failed", "PURGE_FAILED")
+
+    assert extension._workflow_checkpoint.stage == "blocked"
+    assert extension._workflow_checkpoint.failure_reason == "purge failed"
+    assert extension.state.tools["T0"].backups == ()
+    assert extension._backup_operation_queue == []
+    assert extension._finalized_events[11].reason_code == "PURGE_FAILED"
+    assert any("adapter failed" in response
+               for response in printer.gcode.responses)
+
+
+def test_manual_transition_failure_does_not_emit_fallback_event(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path)
+    checkpoint = WorkflowCheckpoint(
+        "manual_route", "heating", 12,
+        logical_tool="T0", current_physical_tool="T0",
+        requested_physical_tool="T1")
+
+    extension._block_workflow(checkpoint, "manual route failed")
+
+    assert extension._workflow_checkpoint.stage == "blocked"
+    assert printer.gcode.script_events == []
+    assert extension._finalized_events == {}
+
+
+def test_finalized_notification_state_is_runtime_only(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, tmp_path)
+
+    extension._attempt_notification(event(reason_detail=None))
+
+    persisted = extension.state.to_dict()
+    assert "notification" not in persisted
+    assert "finalized_events" not in persisted
+    assert persisted["version"] == 1
 
 
 def test_heating_timeout_is_nonterminal_until_guarded_finalization(
