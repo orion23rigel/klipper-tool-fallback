@@ -72,7 +72,7 @@ requirements, work items, acceptance gates, or completion claims:
 
 | Phase | Requirements | Plans Complete | Status | Completed |
 |-------|--------------|----------------|--------|-----------|
-| 5. Runtime Contracts | 8 | 3/3 | Complete   | 2026-06-12 |
+| 5. Runtime Contracts | 8 | 3/3 | Complete    | 2026-06-12 |
 | 6. Examples And Live Integration | 2 | 0/TBD | Not started | - |
 | 7. CI And Release Verification | 3 | 0/TBD | Not started | - |
 

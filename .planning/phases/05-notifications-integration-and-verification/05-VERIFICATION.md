@@ -153,16 +153,16 @@ BACKUP-01/02/03/04/05 without changing the shipped fallback safety model.
 ## Verification Metadata
 
 **Verification approach:** Goal-backward, independent code/test inspection and fresh
-deterministic execution  
+deterministic execution
 **Must-haves source:** `.planning/ROADMAP.md` Phase 5 success criteria, with plan
-frontmatter used as supporting detail  
-**Automated checks:** 5 passed, 0 failed  
-**Human checks required:** 0  
+frontmatter used as supporting detail
+**Automated checks:** 5 passed, 0 failed
+**Human checks required:** 0
 **Decision coverage:** 17/17 honored
 
 ## Verification Complete
 
-**Status:** passed  
+**Status:** passed
 **Evidence:** 5/5 observable truths, 8/8 requirements, 6/6 artifact groups, 5/5 key
-links, and 312/312 full-suite tests verified.  
+links, and 312/312 full-suite tests verified.
 **Gaps:** none.
