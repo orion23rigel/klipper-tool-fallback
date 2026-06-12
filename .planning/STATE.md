@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Integration & Operations
-status: executing
-stopped_at: Phase 5 context gathered
-last_updated: "2026-06-11T18:33:42.561Z"
-last_activity: 2026-06-11 - Created v1.1 Integration & Operations roadmap
+status: verifying
+stopped_at: Phase 5 execution complete; ready for verification
+last_updated: "2026-06-12T13:42:43.374Z"
+last_activity: 2026-06-11 -- Phase 05 execution started
 progress:
   total_phases: 3
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  completed_phases: 1
+  total_plans: 3
+  completed_plans: 3
+  percent: 33
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-11)
 
 **Core value:** Automatic fallback remains safe and operationally trustworthy.
-**Current focus:** Phase 5 - Runtime Contracts
+**Current focus:** Phase 05 — notifications-integration-and-verification
 
 ## Current Position
 
-Phase: 5 of 7 (Runtime Contracts)
-Plan: Not planned
-Status: Ready to execute
-Last activity: 2026-06-11 - Created v1.1 Integration & Operations roadmap
+Phase: 05 (notifications-integration-and-verification) — EXECUTING
+Plan: 3 of 3
+Status: Phase complete — ready for verification
+Last activity: 2026-06-11 -- Phase 05 execution started
 
-Progress: [..........] 0%
+Progress: [███░░░░░░░] 33%
 
 ## Accumulated Context
 
@@ -41,6 +41,12 @@ Progress: [..........] 0%
 
 - Notifications observe outcomes and cannot determine safety outcomes.
 - The four Phase 1 UAT scenarios remain separately deferred and outside v1.1 acceptance.
+- [Phase 05]: Runtime backup operations are normalized into frozen BackupOperation records before candidate construction. — One normalized operation shape lets immediate and queued execution share validation and candidate application.
+- [Phase 05]: Immediate backup changes reject active workflow or transition contexts until Plan 05-02 adds queueing. — Plan 05-01 must remain hardware-neutral and cannot alter in-progress workflow decisions.
+- [Phase 05]: Reset-all validates and builds one complete candidate, then performs at most one persistence write. — This prevents partial reset publication and preserves atomic save-before-publish behavior.
+- [Phase 05]: Queued backup mutations are frozen sequenced records that never retain the submitting G-Code command. — This preserves validated submission intent while keeping runtime-only queue records JSON-safe and free of command object lifetimes.
+- [Phase 05]: A single terminal-workflow hook owns the notification-before-drain ordering point for Plan 05-03. — Centralizing final workflow drain ordering lets notifications observe the completed outcome before future policy is applied.
+- [Phase 05]: Queue application failures remain local diagnostics and retain the failed FIFO suffix without replacing completed safety outcomes. — Accepted work must remain ordered and visible while workflow and transition outcomes retain safety authority.
 
 ### Pending Todos
 
@@ -58,6 +64,13 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-11T16:26:56.448Z
-Stopped at: Phase 5 context gathered
-Resume file: .planning/phases/05-notifications-integration-and-verification/05-CONTEXT.md
+Last session: 2026-06-12T13:42:43.155Z
+Stopped at: Phase 5 execution complete; ready for verification
+Resume file: .planning/phases/05-notifications-integration-and-verification/05-03-SUMMARY.md
+
+## Performance Metrics
+
+| Phase | Plan | Duration | Notes |
+|-------|------|----------|-------|
+| Phase 05 P05-01 | 9 min | 2 tasks | 4 files |
+| Phase 05 P05-02 | 6 min | 2 tasks | 4 files |

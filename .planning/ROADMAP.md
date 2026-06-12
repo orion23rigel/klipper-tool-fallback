@@ -36,7 +36,7 @@ requirements, work items, acceptance gates, or completion claims:
   4. Operators can atomically restore one tool or all tools to configured backup defaults through the same persistence path.
   5. Invalid backup mutations are rejected; mutations submitted during active workflows or transitions are queued and processed in submission order after any terminal outcome, stopping at the first application failure; exact no-ops do not write, persistence failures do not publish, and accepted lists preserve order and the existing loop-safe cycle policy.
 
-**Plans:** 0/3 plans executed
+**Plans:** 3/3 plans complete
 
 ### Phase 6: Examples And Live Integration
 
@@ -72,7 +72,7 @@ requirements, work items, acceptance gates, or completion claims:
 
 | Phase | Requirements | Plans Complete | Status | Completed |
 |-------|--------------|----------------|--------|-----------|
-| 5. Runtime Contracts | 8 | 0/3 | Planned    |  |
+| 5. Runtime Contracts | 8 | 3/3 | Complete   | 2026-06-12 |
 | 6. Examples And Live Integration | 2 | 0/TBD | Not started | - |
 | 7. CI And Release Verification | 3 | 0/TBD | Not started | - |
 

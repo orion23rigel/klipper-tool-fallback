@@ -46,14 +46,14 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| NOTIFY-01 | Phase 5 | Pending |
-| NOTIFY-02 | Phase 5 | Pending |
-| NOTIFY-03 | Phase 5 | Pending |
-| BACKUP-01 | Phase 5 | Pending |
-| BACKUP-02 | Phase 5 | Pending |
-| BACKUP-03 | Phase 5 | Pending |
-| BACKUP-04 | Phase 5 | Pending |
-| BACKUP-05 | Phase 5 | Pending |
+| NOTIFY-01 | Phase 5 | Complete |
+| NOTIFY-02 | Phase 5 | Complete |
+| NOTIFY-03 | Phase 5 | Complete |
+| BACKUP-01 | Phase 5 | Complete |
+| BACKUP-02 | Phase 5 | Complete |
+| BACKUP-03 | Phase 5 | Complete |
+| BACKUP-04 | Phase 5 | Complete |
+| BACKUP-05 | Phase 5 | Complete |
 | EXAMPLE-01 | Phase 6 | Pending |
 | UAT-01 | Phase 6 | Pending |
 | CI-01 | Phase 7 | Pending |
@@ -61,6 +61,7 @@
 | SCOPE-01 | Phase 7 | Pending |
 
 **Coverage:**
+
 - v1.1 requirements: 13 total
 - Mapped to phases: 13
 - Unmapped: 0
