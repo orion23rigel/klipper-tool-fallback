@@ -153,6 +153,7 @@ class FakeGCode:
         self.workflow_events = []
         self.printer = None
         self.script_durations = {}
+        self.script_callbacks = {}
 
     def register_command(self, name, handler, desc=None):
         previous = self.commands.get(name)
@@ -177,6 +178,9 @@ class FakeGCode:
     def set_script_duration(self, script, duration):
         self.script_durations[script] = duration
 
+    def set_script_callback(self, script_prefix, callback):
+        self.script_callbacks[script_prefix] = callback
+
     def run_script_from_command(self, script):
         self.script_events.append(script)
         error = self.script_failures.get(script)
@@ -185,6 +189,9 @@ class FakeGCode:
         duration = self.script_durations.get(script, 0.0)
         if duration:
             self.printer.get_reactor().advance(duration)
+        for prefix, callback in self.script_callbacks.items():
+            if script.startswith(prefix):
+                callback(script)
         print_stats = self.printer.lookup_object("print_stats", None)
         if print_stats is not None:
             if script == "PAUSE":

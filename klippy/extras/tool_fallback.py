@@ -1,5 +1,6 @@
 import json
 import math
+import re
 from dataclasses import asdict
 from dataclasses import dataclass
 from dataclasses import replace
@@ -10,6 +11,14 @@ from . import tool_fallback_state
 
 
 SENSOR_POLL_INTERVAL = 0.25
+NOTIFICATION_DETAIL_LIMIT = 160
+NOTIFICATION_EVENTS = frozenset((
+    "FALLBACK_SUCCESS", "FALLBACK_FAILURE", "TRANSIENT_RECOVERY",
+))
+REASON_CODES = frozenset((
+    "SUCCESS", "TRANSIENT_CLEARED", "GRAPH_EXHAUSTED", "PURGE_FAILED",
+    "MAPPING_PERSIST_FAILED", "RESUME_FAILED", "UNEXPECTED_FAILURE",
+))
 
 
 @dataclass
@@ -44,6 +53,17 @@ class WorkflowCheckpoint:
     stage_deadline: object = None
     graph_report: object = None
     failure_reason: object = None
+
+
+@dataclass(frozen=True)
+class TerminalEvent:
+    event: str
+    generation: int
+    logical_tool: object = None
+    failed_tool: object = None
+    selected_tool: object = None
+    reason_code: str = "UNEXPECTED_FAILURE"
+    reason_detail: object = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +172,8 @@ class ToolFallback:
         self._backup_operation_sequence = 0
         self._backup_drain_in_progress = False
         self._last_backup_drain_failure = None
+        self._notification_in_progress = False
+        self._finalized_events = {}
         self.printer.register_event_handler(
             "klippy:ready", self._handle_ready)
         self.printer.register_event_handler(
@@ -251,6 +273,7 @@ class ToolFallback:
         gcmd.respond_info(json.dumps(snapshot, indent=2, sort_keys=True))
 
     def cmd_SELECT_PHYSICAL_TOOL(self, gcmd):
+        self._guard_notification_operation(gcmd.error)
         self._guard_workflow_operation(gcmd.error, "physical tool selection")
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
         if self._print_is_active():
@@ -260,6 +283,7 @@ class ToolFallback:
         self._select_physical(physical_tool)
 
     def cmd_REMAP_TOOL(self, gcmd):
+        self._guard_notification_operation(gcmd.error)
         self._guard_workflow_operation(gcmd.error, "tool remapping")
         logical_tool = self._require_configured_tool(gcmd, "LOGICAL")
         physical_tool = self._require_configured_tool(gcmd, "PHYSICAL")
@@ -267,12 +291,14 @@ class ToolFallback:
         self._apply_mapping_candidate(gcmd, candidate)
 
     def cmd_RESTORE_TOOL(self, gcmd):
+        self._guard_notification_operation(gcmd.error)
         self._guard_workflow_operation(gcmd.error, "tool mapping restore")
         logical_tool = self._require_configured_tool(gcmd, "TOOL")
         candidate = self.state.with_identity_mapping(logical_tool)
         self._apply_mapping_candidate(gcmd, candidate)
 
     def cmd_RESET_TOOL_MAPPINGS(self, gcmd):
+        self._guard_notification_operation(gcmd.error)
         self._guard_workflow_operation(gcmd.error, "tool mapping reset")
         if self.state is None or self._physical_handlers is None:
             raise gcmd.error("Tool fallback routing is not initialized")
@@ -280,6 +306,7 @@ class ToolFallback:
         self._apply_mapping_candidate(gcmd, candidate)
 
     def cmd_SET_TOOL_BACKUPS(self, gcmd):
+        self._guard_notification_operation(gcmd.error)
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
         operation = BackupOperation(
             "set", physical_tool,
@@ -288,16 +315,19 @@ class ToolFallback:
         self._apply_backup_operation(gcmd, operation)
 
     def cmd_RESTORE_TOOL_BACKUPS(self, gcmd):
+        self._guard_notification_operation(gcmd.error)
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
         operation = BackupOperation("restore", physical_tool)
         self._apply_backup_operation(gcmd, operation)
 
     def cmd_RESET_TOOL_BACKUPS(self, gcmd):
+        self._guard_notification_operation(gcmd.error)
         if self.state is None or self._physical_handlers is None:
             raise gcmd.error("Tool fallback routing is not initialized")
         self._apply_backup_operation(gcmd, BackupOperation("reset"))
 
     def cmd_TOOL_FALLBACK_RUNOUT(self, gcmd):
+        self._guard_notification_operation(gcmd.error)
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
         pause_owned = gcmd.get_int(
             "PAUSE_OWNED", 0, minval=0, maxval=1) == 1
@@ -305,10 +335,12 @@ class ToolFallback:
             physical_tool, False, requested_ownership=pause_owned)
 
     def cmd_TOOL_FALLBACK_INSERT(self, gcmd):
+        self._guard_notification_operation(gcmd.error)
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
         self._record_sensor_event(physical_tool, True)
 
     def cmd_SET_TOOL_FILAMENT_STATE(self, gcmd):
+        self._guard_notification_operation(gcmd.error)
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
         loaded = gcmd.get_int("LOADED", minval=0, maxval=1) == 1
         self._authorize_explicit_tool_state(
@@ -332,11 +364,13 @@ class ToolFallback:
                 (error,))
 
     def cmd_PURGE_TOOL(self, gcmd):
+        self._guard_notification_operation(gcmd.error)
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
         self._purge_physical_tool(
             physical_tool, gcmd.error, gcmd.respond_info, force=True)
 
     def cmd_MARK_TOOL_PURGED(self, gcmd):
+        self._guard_notification_operation(gcmd.error)
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
         self._authorize_explicit_tool_state(
             gcmd, physical_tool, "MARK_TOOL_PURGED")
@@ -345,6 +379,7 @@ class ToolFallback:
         self._persist_purge_candidate(gcmd, candidate)
 
     def cmd_MARK_TOOL_UNPURGED(self, gcmd):
+        self._guard_notification_operation(gcmd.error)
         physical_tool = self._require_configured_tool(gcmd, "TOOL")
         self._authorize_explicit_tool_state(
             gcmd, physical_tool, "MARK_TOOL_UNPURGED")
@@ -424,6 +459,7 @@ class ToolFallback:
         return handler
 
     def _route_logical(self, logical_tool, gcmd):
+        self._guard_notification_operation(gcmd.error)
         if self.state is None or self._physical_handlers is None:
             raise gcmd.error("Tool fallback routing is not initialized")
         self._guard_workflow_operation(gcmd.error, "logical tool selection")
@@ -476,19 +512,107 @@ class ToolFallback:
         self._state_store.save(candidate)
         self.state = candidate
 
-    def _block_workflow(self, checkpoint, reason):
+    def _block_workflow(
+            self, checkpoint, reason, reason_code="UNEXPECTED_FAILURE"):
         blocked = replace(
             checkpoint, stage="blocked", stage_deadline=None,
             failure_reason=reason)
         self._workflow_checkpoint = blocked
         self.gcode.respond_info(reason)
         if blocked.source == "automatic_fallback":
-            self._after_terminal_workflow()
+            self._finalize_fallback_failure(
+                blocked, reason_code, reason)
         return blocked
 
     def _after_terminal_workflow(self):
-        # Plan 05-03 inserts terminal notification delivery before this drain.
         self._drain_backup_operations()
+
+    def _sanitize_reason_detail(self, detail):
+        value = str(detail).encode("ascii", "replace").decode("ascii")
+        value = re.sub(r"[^A-Za-z0-9._:/+-]+", "_", value).strip("_")
+        return (value or "n/a")[:NOTIFICATION_DETAIL_LIMIT]
+
+    def _build_notification_script(self, event):
+        def token(value):
+            return "n/a" if value is None else str(value)
+
+        fields = (
+            ("EVENT", event.event),
+            ("GENERATION", event.generation),
+            ("LOGICAL_TOOL", event.logical_tool),
+            ("FAILED_TOOL", event.failed_tool),
+            ("SELECTED_TOOL", event.selected_tool),
+            ("REASON_CODE", event.reason_code),
+        )
+        script = self.config.global_config.notify_gcode + " " + " ".join(
+            "%s=%s" % (name, token(value)) for name, value in fields)
+        if event.reason_detail is not None:
+            script += " REASON_DETAIL=%s" % (
+                self._sanitize_reason_detail(event.reason_detail),)
+        return script
+
+    def _attempt_notification(self, event):
+        if event.event not in NOTIFICATION_EVENTS:
+            self.gcode.respond_info(
+                "Suppressing unknown tool fallback notification event %s" %
+                (event.event,))
+            return False
+        if event.reason_code not in REASON_CODES:
+            self.gcode.respond_info(
+                "Suppressing unknown tool fallback reason code %s" %
+                (event.reason_code,))
+            return False
+        if self._notification_in_progress:
+            self.gcode.respond_info(
+                "Suppressing recursive tool fallback notification")
+            return False
+        existing = self._finalized_events.get(event.generation)
+        if existing is not None:
+            if existing != event:
+                self.gcode.respond_info(
+                    "Suppressing conflicting finalized event for workflow "
+                    "generation %s" % (event.generation,))
+            return False
+        self._finalized_events[event.generation] = event
+        self._notification_in_progress = True
+        try:
+            self.gcode.run_script_from_command(
+                self._build_notification_script(event))
+        except Exception as error:
+            self.gcode.respond_info(
+                "Tool fallback notification adapter failed: %s" % (error,))
+        finally:
+            self._notification_in_progress = False
+        return True
+
+    def _terminal_event(
+            self, checkpoint, event, reason_code, reason_detail=None):
+        return TerminalEvent(
+            event=event,
+            generation=checkpoint.generation,
+            logical_tool=checkpoint.logical_tool,
+            failed_tool=checkpoint.current_physical_tool,
+            selected_tool=checkpoint.requested_physical_tool,
+            reason_code=reason_code,
+            reason_detail=reason_detail,
+        )
+
+    def _finalize_transient_outcome(self, checkpoint):
+        self._attempt_notification(self._terminal_event(
+            checkpoint, "TRANSIENT_RECOVERY", "TRANSIENT_CLEARED"))
+        self._after_terminal_workflow()
+
+    def _finalize_fallback_success(self, checkpoint):
+        self._attempt_notification(self._terminal_event(
+            checkpoint, "FALLBACK_SUCCESS", "SUCCESS"))
+        self._after_terminal_workflow()
+
+    def _finalize_fallback_failure(
+            self, checkpoint, reason_code, reason_detail=None):
+        detail = reason_detail if reason_code == "UNEXPECTED_FAILURE" else None
+        self._attempt_notification(self._terminal_event(
+            checkpoint, "FALLBACK_FAILURE", reason_code, detail))
+        self._after_terminal_workflow()
 
     def _workflow_stage_failed(self, checkpoint):
         return checkpoint is None or checkpoint.stage == "blocked"
@@ -801,7 +925,7 @@ class ToolFallback:
             (checkpoint.current_physical_tool,))
         self._workflow_checkpoint = None
         if not checkpoint.pause_owned:
-            self._after_terminal_workflow()
+            self._finalize_transient_outcome(checkpoint)
             return
         try:
             self.gcode.run_script_from_command(
@@ -809,9 +933,10 @@ class ToolFallback:
         except Exception as error:
             self._block_workflow(
                 checkpoint,
-                "Unable to resume after transient runout: %s" % (error,))
+                "Unable to resume after transient runout: %s" % (error,),
+                "RESUME_FAILED")
             return
-        self._after_terminal_workflow()
+        self._finalize_transient_outcome(checkpoint)
 
     def _confirmed_runout(self, checkpoint):
         advanced = self._advance_workflow_checkpoint(
@@ -859,7 +984,8 @@ class ToolFallback:
                 advanced,
                 "No eligible backup tool found after one re-scan; "
                 "backups exhausted" if report else "Backup graph "
-                "resolution failed")
+                "resolution failed",
+                "GRAPH_EXHAUSTED")
             if report:
                 self._workflow_checkpoint = replace(
                     self._workflow_checkpoint, graph_report=report)
@@ -924,7 +1050,8 @@ class ToolFallback:
                 self._block_workflow(
                     self._workflow_checkpoint,
                     "Purge of backup tool %s failed: %s" %
-                    (selected, error))
+                    (selected, error),
+                    "PURGE_FAILED")
                 return
 
         # 8. Merge and persist logical mapping from current canonical state.
@@ -935,7 +1062,8 @@ class ToolFallback:
             self._block_workflow(
                 self._workflow_checkpoint,
                 "Unable to persist tool fallback mapping after "
-                "fallback: %s" % (error,))
+                "fallback: %s" % (error,),
+                "MAPPING_PERSIST_FAILED")
             return
 
         # 9. Clear checkpoint and resume only when owned.
@@ -948,9 +1076,10 @@ class ToolFallback:
             except Exception as error:
                 self._block_workflow(
                     completed,
-                    "Resume after fallback failed: %s" % (error,))
+                    "Resume after fallback failed: %s" % (error,),
+                    "RESUME_FAILED")
                 return
-        self._after_terminal_workflow()
+        self._finalize_fallback_success(completed)
 
     def _checkpoint_matches(self, generation, stage):
         checkpoint = self._workflow_checkpoint
@@ -1030,6 +1159,7 @@ class ToolFallback:
         guarded recovery sequence instead of performing a normal resume.
         Otherwise delegate to the original resume handler when present.
         """
+        self._guard_notification_operation(gcmd.error)
         # Prevent re-entrant guarded resume attempts
         if self._resume_in_progress:
             if getattr(self, "_resume_original", None):
@@ -1095,7 +1225,8 @@ class ToolFallback:
             except Exception as error:
                 self._block_workflow(
                     self._workflow_checkpoint,
-                    "Purge of backup tool %s failed: %s" % (requested, error))
+                    "Purge of backup tool %s failed: %s" % (requested, error),
+                    "PURGE_FAILED")
                 return None
 
         # Persist mapping candidate
@@ -1107,7 +1238,8 @@ class ToolFallback:
             self._block_workflow(
                 self._workflow_checkpoint,
                 "Unable to persist tool fallback mapping after "
-                "fallback: %s" % (error,))
+                "fallback: %s" % (error,),
+                "MAPPING_PERSIST_FAILED")
             return None
 
         # Clear checkpoint and resume when owned
@@ -1123,9 +1255,10 @@ class ToolFallback:
                 blocked = replace(checkpoint, stage="blocked",
                                   failure_reason="Resume after fallback failed: %s" % (error,))
                 self._block_workflow(blocked,
-                                     "Resume after fallback failed: %s" % (error,))
+                                     "Resume after fallback failed: %s" % (error,),
+                                     "RESUME_FAILED")
                 return None
-        self._after_terminal_workflow()
+        self._finalize_fallback_success(checkpoint)
         return None
 
     def _resolve_backup_with_rescan(self, failed_tool, snapshot_provider=None):
@@ -1176,6 +1309,12 @@ class ToolFallback:
             "Cannot perform %s while tool fallback workflow generation %s "
             "is %s" % (
                 operation, checkpoint.generation, checkpoint.stage))
+
+    def _guard_notification_operation(self, error_factory):
+        if self._notification_in_progress:
+            raise error_factory(
+                "Tool fallback command is unavailable during notification "
+                "delivery")
 
     def _authorize_explicit_tool_state(
             self, gcmd, physical_tool, command_name):
