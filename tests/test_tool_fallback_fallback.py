@@ -85,6 +85,20 @@ def fallback_state(tool_states):
     })
 
 
+def control_scripts(printer):
+    return [
+        script for script in printer.gcode.script_events
+        if not script.startswith("_TOOL_FALLBACK_NOTIFY ")
+    ]
+
+
+def notification_scripts(printer):
+    return [
+        script for script in printer.gcode.script_events
+        if script.startswith("_TOOL_FALLBACK_NOTIFY ")
+    ]
+
+
 def test_configured_missing_heater_fails_ready_with_tool_and_heater_context(
         config_factory, prefix_config_factory, printer, tmp_path):
     del printer.heaters.heaters["extruder"]
@@ -246,7 +260,8 @@ def test_owned_transient_recovery_resumes_once_after_confirmed_reinsertion(
     printer.reactor.advance(1.0)
 
     assert extension._workflow_checkpoint is None
-    assert printer.gcode.script_events == ["RESUME"]
+    assert control_scripts(printer) == ["RESUME"]
+    assert "EVENT=TRANSIENT_RECOVERY" in notification_scripts(printer)[0]
     assert extension.state.tools["T0"].loaded is True
     assert extension.state.tools["T0"].failed is False
 
@@ -264,7 +279,8 @@ def test_user_owned_transient_recovery_never_resumes(
     printer.reactor.advance(1.0)
 
     assert extension._workflow_checkpoint is None
-    assert printer.gcode.script_events == []
+    assert control_scripts(printer) == []
+    assert "EVENT=TRANSIENT_RECOVERY" in notification_scripts(printer)[0]
 
 
 def test_confirmed_runout_persists_failure_before_handoff(
@@ -626,7 +642,8 @@ def test_complete_fallback_success_ordering(config_factory,
 
     # Verify complete workflow succeeded
     assert extension._workflow_checkpoint is None
-    assert printer.gcode.script_events == ["PAUSE", "RESUME"]
+    assert control_scripts(printer) == ["PAUSE", "RESUME"]
+    assert "EVENT=FALLBACK_SUCCESS" in notification_scripts(printer)[0]
     assert extension.state.tools["T0"].failed is True
     assert extension.state.tools["T0"].loaded is False
     assert extension.state.tools["T0"].purged is False
@@ -827,6 +844,7 @@ def test_fallback_heating_timeout_leaves_recoverable_checkpoint(
 
     assert extension._workflow_checkpoint is not None
     assert extension._workflow_checkpoint.stage == "heating_timeout"
+    assert notification_scripts(printer) == []
 
 
 def test_guarded_resume_after_heating_timeout_completes_fallback(
@@ -867,7 +885,9 @@ def test_guarded_resume_after_heating_timeout_completes_fallback(
     assert extension.state.mappings["T0"] == "T1"
     assert extension.state.tools["T0"].backups == ()
     assert extension._backup_operation_queue == []
-    assert printer.gcode.script_events == ["PAUSE", "RESUME"]
+    assert control_scripts(printer) == ["PAUSE", "RESUME"]
+    assert len(notification_scripts(printer)) == 1
+    assert "EVENT=FALLBACK_SUCCESS" in notification_scripts(printer)[0]
 
 
 def test_transient_terminal_success_drains_future_policy_only(
@@ -924,7 +944,8 @@ def test_guarded_resume_readiness_failure_remains_blocked_without_publishing(
     assert "guarded readiness failure" in (
         extension._workflow_checkpoint.failure_reason)
     assert extension.state.mappings["T0"] == "T0"
-    assert printer.gcode.script_events == ["PAUSE"]
+    assert control_scripts(printer) == ["PAUSE"]
+    assert "EVENT=FALLBACK_FAILURE" in notification_scripts(printer)[0]
 
 
 def test_fallback_user_owned_pause_never_resumes(
@@ -1073,7 +1094,8 @@ def test_fallback_source_shutdown_block_stops_before_selection(
     assert "target must be finite and above 0.0" in (
         extension._workflow_checkpoint.failure_reason)
     assert extension._selected_physical_tool == "T0"
-    assert printer.gcode.script_events == ["PAUSE"]
+    assert control_scripts(printer) == ["PAUSE"]
+    assert "EVENT=FALLBACK_FAILURE" in notification_scripts(printer)[0]
 
 
 def test_fallback_heater_readiness_error_blocks_before_purge_persist_or_resume(
@@ -1100,7 +1122,8 @@ def test_fallback_heater_readiness_error_blocks_before_purge_persist_or_resume(
     assert extension._workflow_checkpoint.stage == "blocked"
     assert "readiness failure" in extension._workflow_checkpoint.failure_reason
     assert extension.state.mappings["T0"] == "T0"
-    assert printer.gcode.script_events == ["PAUSE"]
+    assert control_scripts(printer) == ["PAUSE"]
+    assert "EVENT=FALLBACK_FAILURE" in notification_scripts(printer)[0]
 
 
 def test_fallback_purge_overrun_blocks_without_publishing_mapping_or_resuming(
@@ -1161,3 +1184,6 @@ def test_fallback_resume_failure_preserves_visible_blocked_checkpoint(
     assert "fallback resume failure" in (
         extension._workflow_checkpoint.failure_reason)
     assert extension.state.mappings["T0"] == "T1"
+    assert len(notification_scripts(printer)) == 1
+    assert "EVENT=FALLBACK_FAILURE" in notification_scripts(printer)[0]
+    assert "REASON_CODE=RESUME_FAILED" in notification_scripts(printer)[0]
