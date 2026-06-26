@@ -454,8 +454,7 @@ class TestUATRunbook:
 
     def test_required_matrix_columns(self):
         text = self._runbook()
-        if text is None:
-            pytest.skip("LIVE-UAT.md not yet created")
+        assert text is not None, "LIVE-UAT.md must exist"
         required = [
             "ID", "Evidence", "Claim", "Topology", "Precondition",
             "Procedure", "Expected", "Observed", "Result",
@@ -472,8 +471,7 @@ class TestUATRunbook:
 
     def test_all_live_rows_initially_not_run(self):
         text = self._runbook()
-        if text is None:
-            pytest.skip("LIVE-UAT.md not yet created")
+        assert text is not None, "LIVE-UAT.md must exist"
         # Every live matrix row should be seeded as NOT RUN.
         # Check that the matrix body contains at least one NOT RUN row
         # and no PASS rows in the matrix body.
@@ -491,7 +489,7 @@ class TestUATRunbook:
     def test_bounded_claim_statement(self):
         text = self._runbook()
         if text is None:
-            pytest.skip("LIVE-UAT.md not yet created")
+            assert text is not None, "LIVE-UAT.md must exist"
         lower = text.lower()
         assert "bounded" in lower or "not a universal" in lower, (
             "Runbook must state bounded scope"
@@ -500,7 +498,7 @@ class TestUATRunbook:
     def test_simulation_only_for_failure_inputs(self):
         text = self._runbook()
         if text is None:
-            pytest.skip("LIVE-UAT.md not yet created")
+            assert text is not None, "LIVE-UAT.md must exist"
         lower = text.lower()
         assert "simulation" in lower or "simulated" in lower, (
             "Runbook must label failure inputs as simulation-only"
@@ -509,7 +507,7 @@ class TestUATRunbook:
     def test_stop_conditions_present(self):
         text = self._runbook()
         if text is None:
-            pytest.skip("LIVE-UAT.md not yet created")
+            assert text is not None, "LIVE-UAT.md must exist"
         lower = text.lower()
         assert "stop" in lower, (
             "Runbook must document stop conditions"
@@ -518,7 +516,7 @@ class TestUATRunbook:
     def test_cleanup_instructions_present(self):
         text = self._runbook()
         if text is None:
-            pytest.skip("LIVE-UAT.md not yet created")
+            assert text is not None, "LIVE-UAT.md must exist"
         lower = text.lower()
         assert "cleanup" in lower or "restore" in lower, (
             "Runbook must document cleanup instructions"
@@ -542,7 +540,7 @@ class TestEvidenceSchema:
     def test_evidence_classes_defined(self):
         text = self._evidence_readme()
         if text is None:
-            pytest.skip("evidence/README.md not yet created")
+            assert text is not None, "evidence/README.md must exist"
         lower = text.lower()
         for cls in ("automated-contract", "simulated-input",
                      "normal-live-operation"):
@@ -553,7 +551,7 @@ class TestEvidenceSchema:
     def test_result_states_defined(self):
         text = self._evidence_readme()
         if text is None:
-            pytest.skip("evidence/README.md not yet created")
+            assert text is not None, "evidence/README.md must exist"
         lower = text.lower()
         for state in ("pass", "fail", "blocked", "not run"):
             assert state in lower, (
@@ -563,7 +561,7 @@ class TestEvidenceSchema:
     def test_redaction_legend_present(self):
         text = self._evidence_readme()
         if text is None:
-            pytest.skip("evidence/README.md not yet created")
+            assert text is not None, "evidence/README.md must exist"
         assert "<TRIDENT_MAIN_MCU>" in text
         assert "<T0_CAN_UUID>" in text
         assert "<DISCORD_DESTINATION>" in text
@@ -571,7 +569,7 @@ class TestEvidenceSchema:
     def test_raw_artifacts_prohibited(self):
         text = self._evidence_readme()
         if text is None:
-            pytest.skip("evidence/README.md not yet created")
+            assert text is not None, "evidence/README.md must exist"
         lower = text.lower()
         assert "log" in lower and "prohibit" in lower or (
             "raw" in lower and "commit" in lower
@@ -587,7 +585,7 @@ class TestEvidenceSchema:
     def test_excerpts_template_has_required_fields(self):
         path = TRIDENT / "evidence" / "phase6-live-log.md"
         if not path.exists():
-            pytest.skip("phase6-live-log.md not yet created")
+            assert path.exists(), "phase6-live-log.md must exist"
         text = _read(path)
         lower = text.lower()
         for field in ("excerpt", "timestamp", "row", "source",
@@ -624,7 +622,7 @@ class TestExclusions:
     def test_all_four_exclusions_named_in_runbook(self):
         runbook = TRIDENT / "LIVE-UAT.md"
         if not runbook.exists():
-            pytest.skip("LIVE-UAT.md not yet created")
+            assert text is not None, "LIVE-UAT.md must exist"
         text = _read(runbook)
         for scenario in self.EXCLUDED_SCENARIOS:
             assert scenario in text, (
@@ -639,8 +637,10 @@ class TestExclusions:
             for scenario in self.EXCLUDED_SCENARIOS:
                 idx = lower.find(scenario.lower())
                 assert idx >= 0, f"Missing: {scenario}"
-                # Ensure the context around the mention is exclusionary
-                context = text[max(0, idx - 100):idx + 100].lower()
+                # Ensure the context around the mention is exclusionary.
+                # Use a wide window to catch the "EXCLUDED — NOT EXECUTED"
+                # header that precedes the numbered list.
+                context = text[max(0, idx - 300):idx + 200].lower()
                 assert any(
                     word in context
                     for word in ("excluded", "not executed", "not credited")
