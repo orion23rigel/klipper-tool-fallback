@@ -33,10 +33,12 @@
 | Field | Value |
 |---|---|
 | Trident revision | `e7790d022346a62662acfe0b3098ad39eb9eaddc` |
-| Extension revision | _(record before run)_ |
-| Klipper revision | _(record before run)_ |
-| Moonraker revision | _(record before run)_ |
-| Toolchanger revision | _(record before run)_ |
+| Extension revision | `d27b367` |
+| Klipper revision | _(record before run on live printer)_ |
+| Moonraker revision | _(record before run on live printer)_ |
+| Toolchanger revision | _(record before run on live printer)_ |
+| Active topology | T0/T1 only (T2–T6 disabled) |
+| Run header prepared | 2026-06-26 |
 
 ---
 

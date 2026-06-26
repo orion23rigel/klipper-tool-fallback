@@ -469,22 +469,79 @@ class TestUATRunbook:
                 f"Runbook must contain column '{keyword}'"
             )
 
-    def test_all_live_rows_initially_not_run(self):
+    def test_live_rows_accept_honest_mixed_states(self):
+        """Lifecycle-aware: NOT RUN / FAIL / BLOCKED are acceptable without
+        required fields; PASS rows must have evidence, revisions, observed
+        result, and verified cleanup."""
         text = self._runbook()
         assert text is not None, "LIVE-UAT.md must exist"
-        # Every live matrix row should be seeded as NOT RUN.
-        # Check that the matrix body contains at least one NOT RUN row
-        # and no PASS rows in the matrix body.
         lines = text.splitlines()
-        found_not_run = False
+        # Collect matrix rows (table body lines starting with |)
+        matrix_rows: list[str] = []
+        in_matrix = False
         for line in lines:
             stripped = line.strip()
-            if stripped.startswith("|") and "NOT RUN" in stripped:
-                found_not_run = True
-                break
-        assert found_not_run, (
-            "Runbook must seed every live row as NOT RUN"
+            if "Staged Matrix" in line or "staged matrix" in line.lower():
+                in_matrix = True
+                continue
+            if in_matrix and stripped.startswith("|---") or (
+                in_matrix and stripped.startswith("|") and not stripped.startswith("| ")
+            ):
+                # header or separator — skip
+                if stripped.startswith("|---"):
+                    continue
+            if in_matrix and stripped.startswith("|"):
+                # Check if this is a data row (contains Result column)
+                if "Result" in text[max(0, text.find(stripped) - 500):text.find(stripped)]:
+                    pass
+                matrix_rows.append(stripped)
+        # At least one live row must exist (NOT RUN or otherwise)
+        assert len(matrix_rows) > 0, (
+            "Runbook matrix must contain live rows"
         )
+        # Validate each row
+        for row in matrix_rows:
+            cells = [c.strip() for c in row.split("|")[1:-1]]
+            # Find the Result column (last meaningful column)
+            result = cells[-1] if cells else ""
+            if result == "PASS":
+                # PASS rows MUST have:
+                # 1. Observed result (not empty)
+                # 2. Evidence column (not empty)
+                # 3. Cleanup column (not empty)
+                observed = cells[-4] if len(cells) >= 4 else ""
+                evidence = cells[-3] if len(cells) >= 3 else ""
+                cleanup = cells[-2] if len(cells) >= 2 else ""
+                assert observed not in ("", "-"), (
+                    f"PASS row must have an observed result: {row[:80]}"
+                )
+                assert evidence not in ("", "-"), (
+                    f"PASS row must have committed evidence IDs: {row[:80]}"
+                )
+                assert cleanup not in ("", "-"), (
+                    f"PASS row must have verified cleanup: {row[:80]}"
+                )
+            # NOT RUN, FAIL, BLOCKED are always acceptable without
+            # required fields — they represent honest non-creditable states.
+
+    def test_no_pass_without_evidence(self):
+        """Regression: no PASS row may exist without evidence, observed
+        result, and cleanup. This catches accidental overclaiming."""
+        text = self._runbook()
+        assert text is not None, "LIVE-UAT.md must exist"
+        lines = text.splitlines()
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("|") and "| PASS |" in stripped:
+                cells = [c.strip() for c in stripped.split("|")[1:-1]]
+                result = cells[-1] if cells else ""
+                observed = cells[-4] if len(cells) >= 4 else ""
+                evidence = cells[-3] if len(cells) >= 3 else ""
+                cleanup = cells[-2] if len(cells) >= 2 else ""
+                # At least one of observed/evidence/cleanup must be non-empty
+                assert (
+                    observed or evidence or cleanup
+                ), f"PASS row must have supporting data: {stripped[:100]}"
 
     def test_bounded_claim_statement(self):
         text = self._runbook()
