@@ -84,3 +84,15 @@ SHOW_TOOL_FALLBACK_STATE
 The command prints deterministic read-only JSON containing initialization status,
 schema version, normalized global configuration, canonical tools, and mappings. The same
 snapshot is available through Klipper's `printer.tool_fallback` status object.
+
+## Representative Trident Integration
+
+A complete, revision-bound example configuration bundle is provided for the Voron Trident
+(MadMax toolchanger, active `T0`/`T1`, reciprocal `T0 <-> T1` routing):
+
+- **[examples/trident/README.md](examples/trident/README.md)** — Adaptation, migration,
+  commissioning, hazards, rollback, and scope guide.
+
+This bundle is **revision-bound** to Trident revision
+`e7790d022346a62662acfe0b3098ad39eb9eaddc` and requires adaptation to your specific
+printer. It does not imply universal toolchanger compatibility.
