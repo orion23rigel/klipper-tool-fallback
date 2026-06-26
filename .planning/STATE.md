@@ -2,14 +2,17 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Integration & Operations
-status: Ready to discuss Phase 6
+current_phase: 06
+current_phase_name: examples-and-live-integration
+status: executing
 stopped_at: Phase 6 context gathered
-last_updated: "2026-06-12T16:49:40.343Z"
-last_activity: 2026-06-12
+last_updated: "2026-06-25T23:30:23.482Z"
+last_activity: 2026-06-25
+last_activity_desc: Phase 06 execution started
 progress:
   total_phases: 3
   completed_phases: 1
-  total_plans: 3
+  total_plans: 6
   completed_plans: 3
   percent: 33
 ---
@@ -21,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-11)
 
 **Core value:** Automatic fallback remains safe and operationally trustworthy.
-**Current focus:** Phase 05 — notifications-integration-and-verification
+**Current focus:** Phase 06 — examples-and-live-integration
 
 ## Current Position
 
-Phase: 6
-Plan: Not started
-Status: Ready to discuss Phase 6
-Last activity: 2026-06-12
+Phase: 06 (examples-and-live-integration) — EXECUTING
+Plan: 1 of 3
+Status: Executing Phase 06
+Last activity: 2026-06-25 — Phase 06 execution started
 
 Progress: [███░░░░░░░] 33%
 
