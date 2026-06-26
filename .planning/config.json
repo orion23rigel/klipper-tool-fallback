@@ -1,7 +1,8 @@
 {
   "workflow": {
     "auto_commit": true,
-    "use_subagents": true
+    "use_subagents": true,
+    "_auto_chain_active": false
   },
   "preferences": {
     "language": "en-US"
