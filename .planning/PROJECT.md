@@ -22,21 +22,15 @@ remain deferred to the next milestone.
 - Representative live-printer UAT and printer-specific installation guidance.
 - Runtime backup-list management and CI automation.
 
-## Current Milestone: v1.1 Integration & Operations
+## Current Milestone: v1.2 Non-existent Tool Fallback Definition
 
-**Goal:** Complete the integration and operational work assigned to Phase 5 by the
-Phase 2-4 plans.
+**Goal:** Gracefully handle G-code calling a tool that doesn't exist on the printer by prompting the user to define a backup tool.
 
 **Target features:**
-- External fallback success, failure, and transient-recovery notifications.
-- Representative live-printer testing for routing, sensors, heaters, purge, fallback,
-  and guarded resume.
-- Runtime backup-list mutation commands.
-- Printer-specific installation and integration examples.
-- CI automation and release verification.
-
-**Explicit boundary:** The four Phase 1 UAT scenarios remain separately deferred per
-the user's instruction and are not milestone requirements.
+- Detect when G-code references a tool number not defined in the printer's tool configuration.
+- Prompt the user to define a backup tool for the missing tool (via Klipper command / macro / pause flow).
+- Persist the user's backup-tool choice so subsequent G-code resumes without re-prompting.
+- Fall back to the chosen backup tool (or a sensible default) once defined.
 
 ## Evolution
 
@@ -52,4 +46,4 @@ This document evolves at phase transitions and milestone boundaries.
 2. Update current state and next-milestone goals.
 
 ---
-*Last updated: 2026-06-11 after starting v1.1 milestone*
+*Last updated: 2026-06-27 after starting v1.2 milestone*
