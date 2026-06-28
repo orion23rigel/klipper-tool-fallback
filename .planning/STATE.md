@@ -2,11 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Non-existent Tool Fallback Definition
-status: planning
-last_updated: "2026-06-28T02:41:58.101Z"
+current_phase_name: defining requirements
+status: executing
+stopped_at: Phase 8 context gathered
+last_updated: "2026-06-28T23:41:36.394Z"
 last_activity: 2026-06-28
+last_activity_desc: Milestone v1.2 started
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -26,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-06-27)
 
 Phase: Not started (defining requirements)
 Plan: —
-Status: Defining requirements
+Status: Ready to execute
 Last activity: 2026-06-28 — Milestone v1.2 started
 
 ## Performance Metrics
@@ -76,6 +79,6 @@ Items carried forward from v1.1:
 
 ## Session Continuity
 
-Last session: 2026-06-27
-Stopped at: v1.2 roadmap creation
-Resume file: None
+Last session: 2026-06-28T14:51:45.186Z
+Stopped at: Phase 8 context gathered
+Resume file: .planning/phases/08-state-schema-extension/08-CONTEXT.md
