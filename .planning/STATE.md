@@ -1,49 +1,56 @@
 ---
-gsd_state_version: 1.0
-milestone: v1.2
-milestone_name: Non-existent Tool Fallback Definition
+gsd_state_version: '1.0'
 status: planning
-last_updated: "2026-06-27T23:51:59.705Z"
-last_activity: 2026-06-27
 progress:
-  total_phases: 0
-  completed_phases: 0
+  total_phases: 12
+  completed_phases: 7
   total_plans: 0
   completed_plans: 0
-  percent: 0
+  percent: 58
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-06-11)
+See: .planning/PROJECT.md (updated 2026-06-27)
 
 **Core value:** Automatic fallback remains safe and operationally trustworthy.
-**Current focus:** Phase 06 — examples-and-live-integration
+**Current focus:** v1.2 Non-existent Tool Fallback Definition — Phase 8 ready to plan
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-06-27 — Milestone v1.2 started
+Phase: 8 of 12 (State Schema Extension)
+Plan: 0 of TBD in current phase
+Status: Ready to plan
+Last activity: 2026-06-27 — v1.2 roadmap created
+
+Progress: [████████░░] 58%
+
+## Performance Metrics
+
+**Velocity:**
+- Total plans completed: 9 (v1.0 + v1.1 Phase 5)
+- v1.0: 12 plans across 4 phases
+- v1.1 Phase 5: 3/3 plans complete
+
+**By Phase:**
+
+| Phase | Milestone | Plans | Status |
+|-------|-----------|-------|--------|
+| 1-4 | v1.0 | 12/12 | Complete |
+| 5 | v1.1 | 3/3 | Complete |
+| 6-7 | v1.1 | 0/TBD | Not started |
+| 8 | v1.2 | 0/TBD | Not started |
 
 ## Accumulated Context
 
 ### Decisions
 
-- v1.1 phases follow dependency order: runtime contracts, representative integration,
-  then CI and exact-release verification.
-
-- Notifications observe outcomes and cannot determine safety outcomes.
-- The four Phase 1 UAT scenarios remain separately deferred and outside v1.1 acceptance.
-- [Phase 05]: Runtime backup operations are normalized into frozen BackupOperation records before candidate construction. — One normalized operation shape lets immediate and queued execution share validation and candidate application.
-- [Phase 05]: Immediate backup changes reject active workflow or transition contexts until Plan 05-02 adds queueing. — Plan 05-01 must remain hardware-neutral and cannot alter in-progress workflow decisions.
-- [Phase 05]: Reset-all validates and builds one complete candidate, then performs at most one persistence write. — This prevents partial reset publication and preserves atomic save-before-publish behavior.
-- [Phase 05]: Queued backup mutations are frozen sequenced records that never retain the submitting G-Code command. — This preserves validated submission intent while keeping runtime-only queue records JSON-safe and free of command object lifetimes.
-- [Phase 05]: A single terminal-workflow hook owns the notification-before-drain ordering point for Plan 05-03. — Centralizing final workflow drain ordering lets notifications observe the completed outcome before future policy is applied.
-- [Phase 05]: Queue application failures remain local diagnostics and retain the failed FIFO suffix without replacing completed safety outcomes. — Accepted work must remain ordered and visible while workflow and transition outcomes retain safety authority.
+- v1.2 uses wrapper command `_TOOL_FALLBACK_TN` for detection (not monkey-patching)
+- State schema extension is backward-compatible — existing state files must load
+- User-defined backups merge with configured backups in `resolve_backup_graph()`
+- Build order: schema → commands → reconciliation → detection → prompt flow → observability
 
 ### Pending Todos
 
@@ -51,23 +58,21 @@ None yet.
 
 ### Blockers/Concerns
 
-- Representative live-printer evidence requires supervised access to the stated hardware.
+- State migration (STATE-03) is highest risk — existing state files must load without errors
+- User prompt deadlock requires configurable timeout (PROMPT-05)
+- Fail-closed safety must not be bypassed by user-defined backup paths (FALLBACK-03)
 
 ## Deferred Items
 
-| Category | Item | Status |
-|----------|------|--------|
-| uat | Four Phase 1 startup and persisted-state scenarios | Separately deferred |
+Items carried forward from v1.1:
+
+| Category | Item | Status | Deferred At |
+|----------|------|--------|-------------|
+| v1.1 Phase 6 | Examples And Live Integration | Planned | v1.1 close |
+| v1.1 Phase 7 | CI And Release Verification | Planned | v1.1 close |
 
 ## Session Continuity
 
-Last session: 2026-06-26T03:48:02.881Z
-Stopped at: Phase 6 context gathered
-Resume file: .planning/phases/06-examples-and-live-integration/06-CONTEXT.md
-
-## Performance Metrics
-
-| Phase | Plan | Duration | Notes |
-|-------|------|----------|-------|
-| Phase 05 P05-01 | 9 min | 2 tasks | 4 files |
-| Phase 05 P05-02 | 6 min | 2 tasks | 4 files |
+Last session: 2026-06-27
+Stopped at: v1.2 roadmap creation
+Resume file: None
