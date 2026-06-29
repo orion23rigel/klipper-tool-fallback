@@ -201,7 +201,11 @@ Plans:
   5. If the user does not respond within the configurable timeout, the system falls back to a default tool and resumes.
   6. Timeout events are logged via the existing notification system.
 
-**Plans**: TBD
+**Plans**: 2/2 plans complete
+
+Plans:
+- [x] 11-01-PLAN.md — Add undefined_tool_timeout config field and implement _handle_undefined_tool_prompt (pause, prompt, wait loop, resume)
+- [x] 11-02-PLAN.md — Add comprehensive test coverage for user prompt flow
 
 ### Phase 12: Fallback Integration And Observability
 
@@ -227,7 +231,7 @@ Plans:
 | 8. State Schema Extension | 4 | 1/1 | Complete    | 2026-06-29 |
 | 9. User Commands | 8 | 3/3 | Complete | - |
 | 10. Undefined Tool Detection | 4 | 1/1 | Complete | - |
-| 11. User Prompt Flow | 6 | 0/TBD | Not started | - |
+| 11. User Prompt Flow | 6 | 2/2 | Planned | - |
 | 12. Fallback Integration And Observability | 6 | 0/TBD | Not started | - |
 
 ## Requirement Coverage
