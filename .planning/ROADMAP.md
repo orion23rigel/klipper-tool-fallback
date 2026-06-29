@@ -159,7 +159,13 @@ See [v1.0 roadmap](milestones/v1.0-ROADMAP.md) and
   5. `UNDEFINE_TOOL_BACKUP` rejects the command when the mapping does not exist.
   6. Operators can list all user-defined and configured backup mappings via `SHOW_TOOL_BACKUPS`.
 
-**Plans**: TBD
+**Plans**: 3/3 plans complete
+
+Plans:
+- [x] 09-01-PLAN.md — Add `with_user_defined_backup()` mutation method to FallbackState
+- [x] 09-02-PLAN.md — Implement DEFINE_TOOL_BACKUP and UNDEFINE_TOOL_BACKUP commands
+- [x] 09-03-PLAN.md — Implement SHOW_TOOL_BACKUPS command
+
 **UI hint**: yes
 
 ### Phase 10: Undefined Tool Detection
@@ -174,7 +180,11 @@ See [v1.0 roadmap](milestones/v1.0-ROADMAP.md) and
   3. When the referenced tool is NOT configured, the system triggers the undefined-tool flow.
   4. Detection events are logged to Klipper's log system.
 
-**Plans**: TBD
+**Plans**: 1/1 plans complete | **Status**: Complete
+
+Plans:
+- [x] 10-01-PLAN.md — Implement `_TOOL_FALLBACK_TN` wrapper command with validation, routing delegation, and undefined-tool trigger
+
 **UI hint**: yes
 
 ### Phase 11: User Prompt Flow
@@ -215,8 +225,8 @@ See [v1.0 roadmap](milestones/v1.0-ROADMAP.md) and
 | Phase | Requirements | Plans Complete | Status | Completed |
 |-------|--------------|----------------|--------|-----------|
 | 8. State Schema Extension | 4 | 1/1 | Complete    | 2026-06-29 |
-| 9. User Commands | 8 | 0/TBD | Not started | - |
-| 10. Undefined Tool Detection | 4 | 0/TBD | Not started | - |
+| 9. User Commands | 8 | 3/3 | Complete | - |
+| 10. Undefined Tool Detection | 4 | 1/1 | Complete | - |
 | 11. User Prompt Flow | 6 | 0/TBD | Not started | - |
 | 12. Fallback Integration And Observability | 6 | 0/TBD | Not started | - |
 
