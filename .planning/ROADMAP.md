@@ -143,7 +143,7 @@ See [v1.0 roadmap](milestones/v1.0-ROADMAP.md) and
   3. Existing state files that lack `user_defined_backups` load successfully with the field initialized to `{}`.
    4. New or updated state files persist `user_defined_backups` to disk on every save.
 
-**Plans**: 1/1 plans complete
+**Plans**: 1/1 plans complete | **Status**: Complete
 
 ### Phase 9: User Commands
 

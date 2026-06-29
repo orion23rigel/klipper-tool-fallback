@@ -45,7 +45,7 @@ Last activity: 2026-06-29
 | 1-4 | v1.0 | 12/12 | Complete |
 | 5 | v1.1 | 3/3 | Complete |
 | 6-7 | v1.1 | 0/TBD | Not started |
-| 8 | v1.2 | 0/TBD | Not started |
+| 8 | v1.2 | 1/1 | Complete |
 
 ## Accumulated Context
 
