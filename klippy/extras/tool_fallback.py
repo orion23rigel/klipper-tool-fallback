@@ -212,6 +212,9 @@ class ToolFallback:
             "UNDEFINE_TOOL_BACKUP", self.cmd_UNDEFINE_TOOL_BACKUP,
             desc="Remove a user-defined backup mapping for a logical tool")
         self.gcode.register_command(
+            "SHOW_TOOL_BACKUPS", self.cmd_SHOW_TOOL_BACKUPS,
+            desc="List user-defined backup tool mappings")
+        self.gcode.register_command(
             "TOOL_FALLBACK_RUNOUT", self.cmd_TOOL_FALLBACK_RUNOUT,
             desc="Record a tool fallback filament runout event")
         self.gcode.register_command(
@@ -378,6 +381,20 @@ class ToolFallback:
                 (error,))
         gcmd.respond_info(
             "Tool %s user backup removed" % (logical_tool,))
+
+    def cmd_SHOW_TOOL_BACKUPS(self, gcmd):
+        udd = self.state.user_defined_backups
+        if not udd:
+            gcmd.respond_info("User-defined backups: (empty)")
+            return
+        lines = ["User-defined backups:"]
+        for logical in sorted(udd):
+            backup = udd[logical]
+            if backup is not None:
+                lines.append("  %s -> %s" % (logical, backup))
+            else:
+                lines.append("  %s -> (none)" % (logical,))
+        gcmd.respond_info("\n".join(lines))
 
     def cmd_TOOL_FALLBACK_RUNOUT(self, gcmd):
         self._guard_notification_operation(gcmd.error)
