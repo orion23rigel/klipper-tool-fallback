@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from conftest import ConfigError, FakeGCmd
+from conftest import CommandError, ConfigError, FakeGCmd, FakePrintStats
 from klippy.extras import tool_fallback
 from klippy.extras import tool_fallback_state as state_module
 from klippy.extras.tool_fallback_config import ToolConfig
@@ -198,3 +198,154 @@ def test_status_interfaces_are_deterministic_complete_and_read_only(
     assert expected["transition_active"] is False
     assert post_ready.responses == [
         json.dumps(expected, indent=2, sort_keys=True)]
+
+
+# --- DEFINE_TOOL_BACKUP and UNDEFINE_TOOL_BACKUP tests ---
+
+
+def _load_backup_extension(config_factory, prefix_config_factory, printer,
+                           state_path):
+    """Helper to load an extension configured with T0 and T1 for backup tests."""
+    return load_extension(
+        config_factory, prefix_config_factory, printer, state_path,
+        (("T0", ("T1",)), ("T1", ())))
+
+
+def test_define_tool_backup_is_registered(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    assert "DEFINE_TOOL_BACKUP" in set(printer.gcode.commands)
+
+
+def test_undefine_tool_backup_is_registered(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    assert "UNDEFINE_TOOL_BACKUP" in set(printer.gcode.commands)
+
+
+def test_define_tool_backup_sets_mapping_and_persists(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    path = tmp_path / "state.json"
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer, path)
+    printer.send_event("klippy:ready")
+    gcmd = invoke(printer, "DEFINE_TOOL_BACKUP", LOGICAL="T0", BACKUP="T1")
+
+    assert extension.state.user_defined_backups["T0"] == "T1"
+    assert StateStore(str(path)).load() == extension.state
+    assert "T1" in gcmd.responses[0]
+
+
+def test_define_tool_backup_rejects_unconfigured_backup(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    original = extension.state
+
+    with pytest.raises(CommandError, match="configured canonical tool"):
+        invoke(printer, "DEFINE_TOOL_BACKUP", LOGICAL="T0", BACKUP="T99")
+
+    assert extension.state is original
+
+
+def test_define_tool_backup_rejects_self_reference(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    original = extension.state
+
+    with pytest.raises(CommandError, match="cannot be its own backup"):
+        invoke(printer, "DEFINE_TOOL_BACKUP", LOGICAL="T0", BACKUP="T0")
+
+    assert extension.state is original
+
+
+def test_define_tool_backup_no_op_reports_no_write(
+        config_factory, prefix_config_factory, printer, tmp_path, monkeypatch):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    # First call sets the mapping
+    invoke(printer, "DEFINE_TOOL_BACKUP", LOGICAL="T0", BACKUP="T1")
+    # Second call is a no-op
+    saved = []
+    real_save = extension._state_store.save
+
+    def track_save(candidate):
+        saved.append(candidate)
+        return real_save(candidate)
+
+    monkeypatch.setattr(extension._state_store, "save", track_save)
+    gcmd = invoke(printer, "DEFINE_TOOL_BACKUP", LOGICAL="T0", BACKUP="T1")
+
+    assert "no write" in gcmd.responses[0]
+    assert len(saved) == 0
+
+
+def test_define_tool_backup_rejected_during_workflow(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    extension._workflow_checkpoint = tool_fallback.WorkflowCheckpoint(
+        "automatic_fallback", "debouncing", 1)
+
+    with pytest.raises(CommandError, match="tool fallback workflow"):
+        invoke(printer, "DEFINE_TOOL_BACKUP", LOGICAL="T0", BACKUP="T1")
+
+
+def test_undefine_tool_backup_removes_mapping_and_persists(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    path = tmp_path / "state.json"
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer, path)
+    printer.send_event("klippy:ready")
+    invoke(printer, "DEFINE_TOOL_BACKUP", LOGICAL="T0", BACKUP="T1")
+    gcmd = invoke(printer, "UNDEFINE_TOOL_BACKUP", TOOL="T0")
+
+    assert "T0" not in extension.state.user_defined_backups
+    assert StateStore(str(path)).load() == extension.state
+    assert "removed" in gcmd.responses[0]
+
+
+def test_undefine_tool_backup_rejects_missing_mapping(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    original = extension.state
+
+    with pytest.raises(CommandError, match="No user-defined backup"):
+        invoke(printer, "UNDEFINE_TOOL_BACKUP", TOOL="T0")
+
+    assert extension.state is original
+
+
+def test_undefine_tool_backup_rejected_during_workflow(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    extension._workflow_checkpoint = tool_fallback.WorkflowCheckpoint(
+        "automatic_fallback", "debouncing", 1)
+
+    with pytest.raises(CommandError, match="tool fallback workflow"):
+        invoke(printer, "UNDEFINE_TOOL_BACKUP", TOOL="T0")
+
+
+def invoke(printer, command, **params):
+    gcmd = FakeGCmd(params)
+    printer.gcode.invoke_command(command, gcmd)
+    return gcmd
