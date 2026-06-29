@@ -223,7 +223,12 @@ Plans:
   4. `SHOW_TOOL_FALLBACK_STATE` includes user-defined backup mappings in its output.
   5. Undefined tool detection events are visible in Klipper's log system.
 
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+
+- [ ] 12-01-PLAN.md — Inject user-defined backup into resolve_backup_graph() effective backup list
+- [ ] 12-02-PLAN.md — Expose user_defined_backups in SHOW_TOOL_FALLBACK_STATE and verify detection logging
 
 ## Progress
 
