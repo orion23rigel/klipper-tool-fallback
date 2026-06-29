@@ -1233,7 +1233,7 @@ class ToolFallback:
 
         # 3. Resolve backup graph with one fresh rescan on exhaustion.
         resolution = self._resolve_backup_with_rescan(
-            checkpoint.current_physical_tool)
+            checkpoint.current_physical_tool, logical_tool)
         if resolution.candidate is None:
             report = resolution.to_dict() if resolution else None
             self._block_workflow(
@@ -1517,11 +1517,47 @@ class ToolFallback:
         self._finalize_fallback_success(checkpoint)
         return None
 
-    def _resolve_backup_with_rescan(self, failed_tool, snapshot_provider=None):
+    def _resolve_backup_with_rescan(self, failed_tool, logical_tool=None,
+                                     snapshot_provider=None):
+        # Support legacy call: _resolve_backup_with_rescan(failed_tool, snapshot_provider)
+        # when logical_tool is a callable (i.e., a snapshot provider).
+        if callable(logical_tool):
+            snapshot_provider = logical_tool
+            logical_tool = None
         provider = snapshot_provider or self._canonical_state_snapshot
         unknown_authority = self._unknown_sensor_authority()
-        first = resolve_backup_graph(
-            provider(), failed_tool, unknown_authority)
+        state = provider()
+
+        # Build effective backup list: user-defined first, then configured
+        # (per D-01, D-02 — caller-side injection, not modifying
+        # resolve_backup_graph()).
+        if logical_tool is not None:
+            udd_backup = state.user_defined_backups.get(logical_tool)
+        else:
+            udd_backup = None
+        if udd_backup is not None:
+            configured = state.tools[failed_tool].backups
+            effective_backups = (udd_backup,) + configured
+            # Create a temporary state with the effective backup list
+            # so resolve_backup_graph() sees the user-defined backup as the
+            # first candidate in the backup chain.
+            failed_tool_state = state.tools[failed_tool]
+            new_tool_state = tool_fallback_state.ToolState(
+                loaded=failed_tool_state.loaded,
+                purged=failed_tool_state.purged,
+                failed=failed_tool_state.failed,
+                backups=effective_backups,
+                user_defined_backup=failed_tool_state.user_defined_backup,
+            )
+            tools = dict(state.tools)
+            tools[failed_tool] = new_tool_state
+            effective_state = tool_fallback_state.FallbackState._canonical(
+                tools, state.mappings, state.user_defined_backups)
+        else:
+            effective_state = state
+
+        first = resolve_backup_graph(effective_state, failed_tool,
+                                     unknown_authority)
         if first.candidate is not None:
             return first
         second = resolve_backup_graph(
