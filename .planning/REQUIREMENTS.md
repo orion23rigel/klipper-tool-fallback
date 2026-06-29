@@ -7,10 +7,10 @@
 
 ### State Schema
 
-- [ ] **STATE-01**: The `ToolState` dataclass includes an optional `user_defined_backup` field that defaults to `None`
-- [ ] **STATE-02**: The `ToolFallbackState` dataclass includes an optional `user_defined_backups` dict field that defaults to `{}`
-- [ ] **STATE-03**: `StateStore.load_reconciled()` handles state files that lack `user_defined_backups` (backward-compatible migration)
-- [ ] **STATE-04**: `StateStore.save()` persists `user_defined_backups` to the JSON state file
+- [x] **STATE-01**: The `ToolState` dataclass includes an optional `user_defined_backup` field that defaults to `None`
+- [x] **STATE-02**: The `ToolFallbackState` dataclass includes an optional `user_defined_backups` dict field that defaults to `{}`
+- [x] **STATE-03**: `StateStore.load_reconciled()` handles state files that lack `user_defined_backups` (backward-compatible migration)
+- [x] **STATE-04**: `StateStore.save()` persists `user_defined_backups` to the JSON state file
 
 ### User Commands
 
@@ -65,10 +65,10 @@
 
 | Requirement | Phase | Status |
 |---|---|---|
-| STATE-01 | Phase 8 | Pending |
-| STATE-02 | Phase 8 | Pending |
-| STATE-03 | Phase 8 | Pending |
-| STATE-04 | Phase 8 | Pending |
+| STATE-01 | Phase 8 | Complete |
+| STATE-02 | Phase 8 | Complete |
+| STATE-03 | Phase 8 | Complete |
+| STATE-04 | Phase 8 | Complete |
 | CMD-01 | Phase 9 | Pending |
 | CMD-02 | Phase 9 | Pending |
 | CMD-03 | Phase 9 | Pending |

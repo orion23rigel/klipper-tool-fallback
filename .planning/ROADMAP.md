@@ -126,8 +126,8 @@ See [v1.0 roadmap](milestones/v1.0-ROADMAP.md) and
   1. The `ToolState` dataclass includes an optional `user_defined_backup` field defaulting to `None`.
   2. The `ToolFallbackState` dataclass includes an optional `user_defined_backups` dict defaulting to `{}`.
   3. Existing state files that lack `user_defined_backups` load successfully with the field initialized to `{}`.
-  4. New or updated state files persist `user_defined_backups` to disk on every save.
-**Plans**: TBD
+   4. New or updated state files persist `user_defined_backups` to disk on every save.
+**Plans**: 1/1 plans complete
 
 ### Phase 9: User Commands
 
@@ -190,7 +190,7 @@ See [v1.0 roadmap](milestones/v1.0-ROADMAP.md) and
 
 | Phase | Requirements | Plans Complete | Status | Completed |
 |-------|--------------|----------------|--------|-----------|
-| 8. State Schema Extension | 4 | 0/TBD | Not started | - |
+| 8. State Schema Extension | 4 | 1/1 | Complete | 2026-06-28 |
 | 9. User Commands | 8 | 0/TBD | Not started | - |
 | 10. Undefined Tool Detection | 4 | 0/TBD | Not started | - |
 | 11. User Prompt Flow | 6 | 0/TBD | Not started | - |
