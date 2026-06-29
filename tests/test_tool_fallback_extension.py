@@ -502,9 +502,12 @@ def test_tool_fallback_tn_unconfigured_triggers_undefined_flow(
 
     invoke(printer, "_TOOL_FALLBACK_TN", T="T99")
 
-    # Prompt flow pauses, displays prompt, enters waiting loop.
-    # With a 300-second timeout and no user response, the flow times out,
-    # falls back to the first configured tool, and resumes.
+    # Prompt flow uses timer-based polling (not busy-wait).
+    # Advance reactor past the 300-second timeout so the timer fires.
+    reactor = printer.get_reactor()
+    reactor.advance(301)
+
+    # Prompt flow times out, falls back to the first configured tool, and resumes.
     assert print_stats.state == "printing"
     assert any("T99 not defined" in r for r in printer.gcode.responses)
     assert any("timed out" in r and "falling back" in r
@@ -525,7 +528,11 @@ def test_tool_fallback_tn_unconfigured_pauses_and_resumes_after_timeout(
 
     invoke(printer, "_TOOL_FALLBACK_TN", T="T99")
 
-    # Prompt flow pauses, then times out and resumes.
+    # Prompt flow uses timer-based polling — advance past timeout.
+    reactor = printer.get_reactor()
+    reactor.advance(301)
+
+    # Prompt flow times out and resumes.
     assert print_stats.state == "printing"
     assert "PAUSE" in printer.gcode.script_events
     assert "RESUME" in printer.gcode.script_events
@@ -562,6 +569,10 @@ def test_undefined_tool_prompt_triggers_pause(
             undefined_tool_timeout=0.05))
 
     invoke(printer, "_TOOL_FALLBACK_TN", T="T99")
+
+    # Advance reactor past the 0.05s timeout so the timer fires and resumes.
+    reactor = printer.get_reactor()
+    reactor.advance(0.1)
 
     assert print_stats.state == "printing"
     assert "PAUSE" in printer.gcode.script_events
@@ -600,6 +611,10 @@ def test_undefined_tool_prompt_sets_sentinel(
             undefined_tool_timeout=0.05))
 
     invoke(printer, "_TOOL_FALLBACK_TN", T="T99")
+
+    # Advance reactor past the 0.05s timeout so the timer fires and clears sentinel.
+    reactor = printer.get_reactor()
+    reactor.advance(0.1)
 
     # After timeout, sentinel is cleared
     assert extension._undefined_tool_pending is None
@@ -653,7 +668,11 @@ def test_undefined_tool_timeout_falls_back_to_default(
 
     invoke(printer, "_TOOL_FALLBACK_TN", T="T99")
 
-    # Flow completed synchronously: paused then resumed via timeout path
+    # Advance reactor past the 0.05s timeout so the timer fires and resumes.
+    reactor = printer.get_reactor()
+    reactor.advance(0.1)
+
+    # Flow completed: paused then resumed via timeout path
     assert print_stats.state == "printing"
     assert "PAUSE" in printer.gcode.script_events
     assert "RESUME" in printer.gcode.script_events
@@ -680,6 +699,10 @@ def test_undefined_tool_timeout_sends_notification(
 
     invoke(printer, "_TOOL_FALLBACK_TN", T="T99")
 
+    # Advance reactor past the 0.05s timeout so the timer fires.
+    reactor = printer.get_reactor()
+    reactor.advance(0.1)
+
     # Timeout notification script was run
     assert any("UNDEFINED_TOOL_TIMEOUT" in s
                for s in printer.gcode.script_events)
@@ -698,6 +721,10 @@ def test_undefined_tool_prompt_no_print_stats_no_pause(
             undefined_tool_timeout=0.05))
 
     invoke(printer, "_TOOL_FALLBACK_TN", T="T99")
+
+    # Advance reactor past the 0.05s timeout so the timer fires.
+    reactor = printer.get_reactor()
+    reactor.advance(0.1)
 
     # Prompt still displayed, sentinel cleared after timeout
     assert extension._undefined_tool_pending is None

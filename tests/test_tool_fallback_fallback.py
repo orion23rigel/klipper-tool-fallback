@@ -364,7 +364,8 @@ def test_conflicting_runout_does_not_replace_active_pending_workflow(
         FakeGCmd({"TOOL": "T1", "PAUSE_OWNED": "1"}))
 
     assert extension._workflow_checkpoint is original
-    assert any("another tool fallback workflow is active" in response
+    assert any("queued" in response.lower() or
+               "another tool fallback workflow is active" in response
                for response in printer.gcode.responses)
 
 

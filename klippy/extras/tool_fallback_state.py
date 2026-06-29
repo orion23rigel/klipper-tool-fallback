@@ -189,6 +189,7 @@ class FallbackState:
             logical: backup
             for logical, backup in self.user_defined_backups.items()
             if logical in configured_names
+            and (backup is None or backup in configured_names)
         }
         return self._canonical(
             tool_states, mappings, MappingProxyType(filtered_backups))

@@ -105,6 +105,9 @@ class QueuedBackupOperation:
 
 
 def resolve_backup_graph(state, failed_tool, unknown_authority=()):
+    # Defensive validation: ensure failed_tool exists in state (per IN-01 fix).
+    if failed_tool not in state.tools:
+        raise KeyError("Unknown failed tool: %s" % (failed_tool,))
     unknown_authority = frozenset(unknown_authority)
     evaluated = []
     evaluated_set = set()
@@ -176,6 +179,8 @@ class ToolFallback:
         self._last_backup_drain_failure = None
         self._notification_in_progress = False
         self._finalized_events = {}
+        # Queue for runout events that arrive during active workflows
+        self._pending_runout_queue = []
         self.printer.register_event_handler(
             "klippy:ready", self._handle_ready)
         self.printer.register_event_handler(
@@ -183,12 +188,17 @@ class ToolFallback:
         self.gcode.register_command(
             "SHOW_TOOL_FALLBACK_STATE", self.cmd_SHOW_TOOL_FALLBACK_STATE,
             desc="Show canonical tool fallback state")
-        # Re-entrancy guard for guarded resume handler
-        self._resume_in_progress = False
+        # Re-entrancy guard for guarded resume handler — generation counter
+        # tracks which resume operation is active (prevents interleaving).
+        self._resume_generation = 0
         # Sentinel flag set when an undefined-tool prompt is active.
         # Cleared by cmd_DEFINE_TOOL_BACKUP when the user defines a backup
         # for the pending tool. Also cleared on timeout or manual resume.
         self._undefined_tool_pending = None
+        # Timer handle for undefined-tool prompt polling (timer-based, not busy-wait)
+        self._undefined_tool_prompt_handle = None
+        # Timeout deadline for the current prompt
+        self._undefined_tool_prompt_deadline = None
         self.gcode.register_command(
             "SELECT_PHYSICAL_TOOL", self.cmd_SELECT_PHYSICAL_TOOL,
             desc="Select a physical tool without changing logical mappings")
@@ -631,6 +641,13 @@ class ToolFallback:
                 self.config.global_config.resume_gcode)
 
     def _select_physical(self, physical_tool):
+        # Re-entrancy guard: physical handlers must not trigger tool fallback
+        # events (per WR-06 fix). Only block if workflow is in a stage where
+        # physical selection would be dangerous (e.g., during transition).
+        # Allow selection during normal fallback flow (selected, heating stages).
+        if (self._workflow_checkpoint is not None
+                and self._workflow_checkpoint.stage in ("transition",)):
+            return
         runtime = self._sensor_runtime.get(physical_tool)
         if runtime is not None and runtime.authority == "unknown":
             self.gcode.respond_info(
@@ -661,6 +678,24 @@ class ToolFallback:
 
     def _after_terminal_workflow(self):
         self._drain_backup_operations()
+        self._drain_pending_runout_queue()
+
+    def _drain_pending_runout_queue(self):
+        """Process queued runout events after a workflow completes."""
+        if not self._pending_runout_queue:
+            return
+        entries = list(self._pending_runout_queue)
+        self._pending_runout_queue.clear()
+        for entry in entries:
+            tool = entry["tool"]
+            ownership = entry["ownership"]
+            try:
+                self._record_sensor_event(
+                    tool, False, requested_ownership=ownership)
+            except Exception as error:
+                self.gcode.respond_info(
+                    "Failed to process queued runout for %s: %s" %
+                    (tool, error))
 
     def _sanitize_reason_detail(self, detail):
         value = str(detail).encode("ascii", "replace").decode("ascii")
@@ -1023,9 +1058,15 @@ class ToolFallback:
                     and self._workflow_checkpoint.current_physical_tool
                     == physical_tool):
                 return
+            # Queue the runout for processing after the current workflow
+            # completes, so critical events are not silently dropped.
+            self._pending_runout_queue.append({
+                "tool": physical_tool,
+                "ownership": requested_ownership,
+            })
             self.gcode.respond_info(
-                "Ignoring runout for %s because another tool fallback "
-                "workflow is active" % (physical_tool,))
+                "Runout for %s queued — will process after current "
+                "workflow completes" % (physical_tool,))
             return
         print_state = self._get_print_state()
         selected = self._selected_physical_tool == physical_tool
@@ -1079,6 +1120,10 @@ class ToolFallback:
 
         Called from cmd_TOOL_FALLBACK_TN when an undefined tool is detected.
         Implements PROMPT-01 through PROMPT-06.
+
+        Uses a timer-based event model instead of a busy-wait loop to avoid
+        blocking the Klipper reactor. The _undefined_tool_prompt_timer callback
+        polls for user input or timeout.
         """
         reactor = self.printer.get_reactor()
         eventtime = reactor.monotonic()
@@ -1112,23 +1157,40 @@ class ToolFallback:
         timeout_deadline = (
             eventtime + self.config.global_config.undefined_tool_timeout)
 
-        # PROMPT-03: Wait loop — poll for user input or timeout (per D-10, D-12, D-13)
-        while True:
-            now = reactor.monotonic()
+        # PROMPT-03: Start timer-based polling for user input or timeout (per D-10, D-12, D-13)
+        self._undefined_tool_prompt_deadline = timeout_deadline
+        self._undefined_tool_prompt_handle = reactor.register_timer(
+            self._undefined_tool_prompt_timer, eventtime + 0.1)
+        reactor.update_timer(
+            self._undefined_tool_prompt_handle, timeout_deadline)
 
-            # Check if user defined a backup (sentinel flag cleared by cmd_DEFINE_TOOL_BACKUP)
-            if self._undefined_tool_pending is None:
-                break
+    def _undefined_tool_prompt_timer(self, eventtime):
+        """Timer callback for undefined-tool prompt polling.
 
-            # Check timeout (per D-03: per-event timeout)
-            if now >= timeout_deadline:
-                self._handle_undefined_tool_timeout(undefined_tool)
-                return
+        Checks if the user has defined a backup (sentinel cleared) or if
+        the timeout has expired. Re-schedules itself if still waiting.
+        """
+        if self._undefined_tool_pending is None:
+            # User defined a backup — proceed to resume
+            self._undefined_tool_prompt_complete()
+            return self.printer.get_reactor().NEVER
+        if eventtime >= self._undefined_tool_prompt_deadline:
+            # Timeout expired — fall back to default tool
+            undefined_tool = self._undefined_tool_pending
+            self._handle_undefined_tool_timeout(undefined_tool)
+            return self.printer.get_reactor().NEVER
+        # Still waiting — re-schedule in 0.1s
+        return eventtime + 0.1
 
-            # Advance reactor so timer callbacks can fire
-            reactor.advance(0.1)
+    def _undefined_tool_prompt_complete(self):
+        """Handle successful user response to undefined-tool prompt.
 
-        # PROMPT-04: Resume after user defined backup (per D-14, D-15)
+        Called when _undefined_tool_pending is cleared by cmd_DEFINE_TOOL_BACKUP.
+        """
+        # Clear the prompt timer
+        reactor = self.printer.get_reactor()
+        reactor.update_timer(
+            self._undefined_tool_prompt_handle, reactor.NEVER)
         self._undefined_tool_pending = None
         completed = self._workflow_checkpoint
         self._workflow_checkpoint = None
@@ -1207,6 +1269,13 @@ class ToolFallback:
         self._on_confirmed_runout(advanced)
 
     def _on_confirmed_runout(self, checkpoint):
+        # Validate checkpoint stage before proceeding (per WR-02 fix).
+        # The checkpoint must be at 'confirmed_runout' stage.
+        if checkpoint is None or checkpoint.stage != "confirmed_runout":
+            self.gcode.respond_info(
+                "Confirmed runout checkpoint invalid (stage=%s); aborting" %
+                (checkpoint.stage if checkpoint else "None",))
+            return
         reactor = self.printer.get_reactor()
         eventtime = reactor.monotonic()
 
@@ -1421,8 +1490,9 @@ class ToolFallback:
         Otherwise delegate to the original resume handler when present.
         """
         self._guard_notification_operation(gcmd.error)
-        # Prevent re-entrant guarded resume attempts
-        if self._resume_in_progress:
+        # Prevent re-entrant guarded resume attempts using generation counter
+        resume_gen = self._resume_generation
+        if resume_gen > 0:
             if getattr(self, "_resume_original", None):
                 return self._resume_original(gcmd)
             return None
@@ -1433,14 +1503,17 @@ class ToolFallback:
             return None
         # Handle guarded resume for heating_timeout
         try:
-            self._resume_in_progress = True
-            return self._handle_guarded_resume(gcmd)
+            self._resume_generation += 1
+            current_gen = self._resume_generation
+            return self._handle_guarded_resume(gcmd, current_gen)
         except Exception as error:
             raise gcmd.error(str(error))
         finally:
-            self._resume_in_progress = False
+            # Only clear the generation if it hasn't been superseded
+            if self._resume_generation == current_gen:
+                self._resume_generation = 0
 
-    def _handle_guarded_resume(self, gcmd):
+    def _handle_guarded_resume(self, gcmd, resume_generation):
         """Attempt guarded recovery from a heating_timeout checkpoint.
 
         This will re-run the heater readiness wait and, if successful,
@@ -1504,6 +1577,7 @@ class ToolFallback:
             return None
 
         # Clear checkpoint and resume when owned
+        completed = self._workflow_checkpoint
         self._workflow_checkpoint = None
         if checkpoint.pause_owned:
             try:
@@ -1513,13 +1587,13 @@ class ToolFallback:
                     self.config.global_config.resume_gcode)
             except Exception as error:
                 # Re-create a blocked checkpoint from the saved checkpoint
-                blocked = replace(checkpoint, stage="blocked",
+                blocked = replace(completed, stage="blocked",
                                   failure_reason="Resume after fallback failed: %s" % (error,))
                 self._block_workflow(blocked,
                                      "Resume after fallback failed: %s" % (error,),
                                      "RESUME_FAILED")
                 return None
-        self._finalize_fallback_success(checkpoint)
+        self._finalize_fallback_success(completed)
         return None
 
     def _resolve_backup_with_rescan(self, failed_tool, logical_tool=None,
@@ -1546,6 +1620,8 @@ class ToolFallback:
             # Create a temporary state with the effective backup list
             # so resolve_backup_graph() sees the user-defined backup as the
             # first candidate in the backup chain.
+            # NOTE: effective_state is read-only and temporary — only used for
+            # resolve_backup_graph() traversal. Changes are not persisted.
             failed_tool_state = state.tools[failed_tool]
             new_tool_state = tool_fallback_state.ToolState(
                 loaded=failed_tool_state.loaded,
@@ -1723,6 +1799,15 @@ class ToolFallback:
         if any(not item for item in backups):
             raise gcmd.error(
                 "BACKUPS must not contain empty entries")
+        # Validate tool name format (per IN-04 fix — defense-in-depth).
+        malformed = [
+            item for item in backups
+            if not tool_fallback_config.TOOL_NAME_RE.fullmatch(item)
+        ]
+        if malformed:
+            raise gcmd.error(
+                "BACKUPS must contain configured canonical tools; invalid "
+                "format: %s" % (", ".join(malformed),))
         unknown = [item for item in backups if item not in self.config.tools]
         if unknown:
             raise gcmd.error(
