@@ -349,3 +349,95 @@ def invoke(printer, command, **params):
     gcmd = FakeGCmd(params)
     printer.gcode.invoke_command(command, gcmd)
     return gcmd
+
+
+# --- SHOW_TOOL_BACKUPS tests ---
+
+
+def test_show_tool_backups_is_registered(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    assert "SHOW_TOOL_BACKUPS" in set(printer.gcode.commands)
+
+
+def test_show_tool_backups_empty_state(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    gcmd = invoke(printer, "SHOW_TOOL_BACKUPS")
+
+    assert "(empty)" in gcmd.responses[0]
+
+
+def test_show_tool_backups_single_mapping(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    invoke(printer, "DEFINE_TOOL_BACKUP", LOGICAL="T0", BACKUP="T1")
+    gcmd = invoke(printer, "SHOW_TOOL_BACKUPS")
+
+    assert "T0 -> T1" in gcmd.responses[0]
+
+
+def test_show_tool_backups_multiple_mappings_sorted(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    # Define two mappings: T0->T1 and T1->T0 (T1 is configured)
+    invoke(printer, "DEFINE_TOOL_BACKUP", LOGICAL="T0", BACKUP="T1")
+    invoke(printer, "DEFINE_TOOL_BACKUP", LOGICAL="T1", BACKUP="T0")
+    gcmd = invoke(printer, "SHOW_TOOL_BACKUPS")
+
+    output = "\n".join(gcmd.responses)
+    t0_pos = output.index("T0 -> T1")
+    t1_pos = output.index("T1 -> T0")
+    assert t0_pos < t1_pos
+
+
+def test_show_tool_backups_with_none_backup(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    invoke(printer, "DEFINE_TOOL_BACKUP", LOGICAL="T0", BACKUP="T1")
+    # Manually set a None entry to test the "(none)" display path
+    # We need to create a state where a tool has a None backup entry
+    # This happens when we define T0->T1 then manually add a None entry
+    # Actually: with_user_defined_backup(T0, None) removes the entry
+    # So we need to directly set a None value in the underlying dict
+    # Let's test via a different approach: create state with from_dict
+    import json
+    from klippy.extras.tool_fallback_state import StateStore
+    path = tmp_path / "state.json"
+    decoded = {
+        "version": 2,
+        "tools": {
+            "T0": {
+                "loaded": True, "purged": True, "failed": False,
+                "backups": ["T1"], "user_defined_backup": None,
+            },
+            "T1": {
+                "loaded": False, "purged": False, "failed": False,
+                "backups": [], "user_defined_backup": None,
+            },
+        },
+        "mappings": {"T0": "T0", "T1": "T1"},
+        "user_defined_backups": {"T0": None},
+    }
+    path.write_text(json.dumps(decoded), encoding="utf-8")
+    extension2 = _load_backup_extension(
+        config_factory, prefix_config_factory, printer, path)
+    printer.send_event("klippy:ready")
+    gcmd2 = invoke(printer, "SHOW_TOOL_BACKUPS")
+
+    assert "(none)" in gcmd2.responses[0]
