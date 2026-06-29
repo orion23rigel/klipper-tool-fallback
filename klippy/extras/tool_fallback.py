@@ -206,6 +206,12 @@ class ToolFallback:
             "RESET_TOOL_BACKUPS", self.cmd_RESET_TOOL_BACKUPS,
             desc="Restore every physical tool's configured backup policy")
         self.gcode.register_command(
+            "DEFINE_TOOL_BACKUP", self.cmd_DEFINE_TOOL_BACKUP,
+            desc="Define a user backup mapping for a logical tool")
+        self.gcode.register_command(
+            "UNDEFINE_TOOL_BACKUP", self.cmd_UNDEFINE_TOOL_BACKUP,
+            desc="Remove a user-defined backup mapping for a logical tool")
+        self.gcode.register_command(
             "TOOL_FALLBACK_RUNOUT", self.cmd_TOOL_FALLBACK_RUNOUT,
             desc="Record a tool fallback filament runout event")
         self.gcode.register_command(
@@ -326,6 +332,52 @@ class ToolFallback:
         if self.state is None or self._physical_handlers is None:
             raise gcmd.error("Tool fallback routing is not initialized")
         self._apply_backup_operation(gcmd, BackupOperation("reset"))
+
+    def cmd_DEFINE_TOOL_BACKUP(self, gcmd):
+        self._guard_notification_operation(gcmd.error)
+        self._guard_workflow_operation(
+            gcmd.error, "tool backup definition")
+        logical_tool = self._require_configured_tool(gcmd, "LOGICAL")
+        backup_tool = self._require_configured_tool(gcmd, "BACKUP")
+        if logical_tool == backup_tool:
+            raise gcmd.error(
+                "Tool %s cannot be its own backup" % (logical_tool,))
+        candidate = self.state.with_user_defined_backup(
+            logical_tool, backup_tool)
+        if candidate is self.state:
+            gcmd.respond_info(
+                "Tool %s backup unchanged: %s -> %s (no write)" %
+                (logical_tool,
+                 self.state.user_defined_backups.get(logical_tool, "(none)"),
+                 backup_tool))
+            return
+        try:
+            self._persist_state(candidate)
+        except OSError as error:
+            raise gcmd.error(
+                "Unable to persist tool fallback backup mapping: %s" %
+                (error,))
+        gcmd.respond_info(
+            "Tool %s user backup set to %s" % (logical_tool, backup_tool))
+
+    def cmd_UNDEFINE_TOOL_BACKUP(self, gcmd):
+        self._guard_notification_operation(gcmd.error)
+        self._guard_workflow_operation(
+            gcmd.error, "tool backup undefinition")
+        logical_tool = self._require_configured_tool(gcmd, "TOOL")
+        if logical_tool not in self.state.user_defined_backups:
+            raise gcmd.error(
+                "No user-defined backup for tool %s" % (logical_tool,))
+        candidate = self.state.with_user_defined_backup(
+            logical_tool, None)
+        try:
+            self._persist_state(candidate)
+        except OSError as error:
+            raise gcmd.error(
+                "Unable to persist tool fallback backup mapping: %s" %
+                (error,))
+        gcmd.respond_info(
+            "Tool %s user backup removed" % (logical_tool,))
 
     def cmd_TOOL_FALLBACK_RUNOUT(self, gcmd):
         self._guard_notification_operation(gcmd.error)
