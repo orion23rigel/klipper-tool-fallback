@@ -232,6 +232,10 @@ class ToolFallback:
         self.gcode.register_command(
             "MARK_TOOL_UNPURGED", self.cmd_MARK_TOOL_UNPURGED,
             desc="Mark a physical tool unpurged")
+        self.gcode.register_command(
+            "_TOOL_FALLBACK_TN", self.cmd_TOOL_FALLBACK_TN,
+            desc="_TOOL_FALLBACK_TN wrapper for tool selection")
+        self.gcode.respond_info("Tool fallback routing initialized")
         # Wrap the global resume gcode with a guarded handler so that a
         # user-invoked RESUME can trigger guarded recovery from a
         # 'heating_timeout' checkpoint.  Keep a reference to the original
@@ -527,6 +531,42 @@ class ToolFallback:
         def handler(gcmd):
             return self._route_logical(logical_tool, gcmd)
         return handler
+
+    def cmd_TOOL_FALLBACK_TN(self, gcmd):
+        """Wrapper G-code command for tool selection with undefined-tool detection.
+
+        Parses the T parameter, validates the tool number format, checks if the
+        tool is configured, and either delegates to existing routing or triggers
+        the undefined-tool flow via a WorkflowCheckpoint.
+        """
+        if self.config is None or self._physical_handlers is None:
+            raise gcmd.error("Tool fallback routing is not initialized")
+
+        raw_t = gcmd.get("T")
+        if raw_t is None:
+            raise gcmd.error("_TOOL_FALLBACK_TN requires a T parameter")
+
+        if not tool_fallback_config.TOOL_NAME_RE.match(raw_t):
+            raise gcmd.error(
+                "Tool number must be in format Tn where n is a non-negative integer")
+
+        if raw_t not in self.config.tools:
+            self.gcode.respond_info(
+                "Tool %s is not configured on this printer" % (raw_t,))
+            self._workflow_generation += 1
+            self._workflow_checkpoint = WorkflowCheckpoint(
+                source="undefined_tool",
+                stage="tool_not_configured",
+                generation=self._workflow_generation,
+                logical_tool=raw_t,
+                current_physical_tool=None,
+                pause_owned=False,
+            )
+            return
+
+        self._route_logical(raw_t, gcmd)
+        self.gcode.respond_info(
+            "Tool %s is configured; routing normally" % (raw_t,))
 
     def _route_logical(self, logical_tool, gcmd):
         self._guard_notification_operation(gcmd.error)
