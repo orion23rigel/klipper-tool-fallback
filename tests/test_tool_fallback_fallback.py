@@ -1494,3 +1494,80 @@ def test_no_user_defined_backup_unchanged_behavior(config_factory,
     assert extension._selected_physical_tool == "T1"
     assert extension._active_logical_tool == "T0"
     assert "EVENT=FALLBACK_SUCCESS" in notification_scripts(printer)[0]
+
+
+def test_concurrent_sensor_event_during_fallback_is_ignored(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    """Test that a sensor event arriving during fallback heating stage
+    does not corrupt the active workflow (test gap from deep review)."""
+    path = tmp_path / "state.json"
+    extension = _load_fallback_config(
+        config_factory, prefix_config_factory, printer, path,
+        tool_states={
+            "T0": {"loaded": True, "purged": True, "failed": False,
+                   "backups": ["T1"]},
+            "T1": {"loaded": True, "purged": True, "failed": False,
+                   "backups": []},
+        })
+
+    extension._selected_physical_tool = "T0"
+    extension._active_logical_tool = "T0"
+
+    # Simulate a fallback workflow in progress (heating stage)
+    extension._workflow_generation = 1
+    extension._workflow_checkpoint = WorkflowCheckpoint(
+        source="automatic_fallback",
+        stage="heating",
+        generation=1,
+        logical_tool="T0",
+        current_physical_tool="T0",
+        requested_physical_tool="T1",
+        pause_owned=True,
+        target_temperature=200.0,
+    )
+
+    # A sensor event arrives for T0 during the heating stage
+    # This should be ignored — the workflow should not be disrupted
+    extension._begin_pending_runout("T0", requested_ownership=False)
+
+    # The checkpoint should remain unchanged
+    assert extension._workflow_checkpoint.stage == "heating"
+    assert extension._workflow_checkpoint.generation == 1
+
+
+def test_backup_queue_drain_during_active_workflow(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    """Test that the backup operation queue drains correctly after a
+    workflow completes (test gap from deep review)."""
+    path = tmp_path / "state.json"
+    extension = _load_fallback_config(
+        config_factory, prefix_config_factory, printer, path,
+        tool_states={
+            "T0": {"loaded": True, "purged": True, "failed": False,
+                   "backups": ["T1"]},
+            "T1": {"loaded": True, "purged": True, "failed": False,
+                   "backups": []},
+        })
+
+    # Queue a backup operation while a workflow is active
+    extension._workflow_checkpoint = WorkflowCheckpoint(
+        source="automatic_fallback",
+        stage="selected",
+        generation=1,
+        logical_tool="T0",
+        current_physical_tool="T0",
+        requested_physical_tool="T1",
+        pause_owned=False,
+    )
+    operation = tool_fallback.BackupOperation("set", "T0", ("T1",))
+    queued = tool_fallback.QueuedBackupOperation(1, operation)
+    extension._backup_operation_queue.append(queued)
+
+    # Complete the workflow
+    extension._workflow_checkpoint = None
+
+    # The drain should process the queued operation
+    extension._drain_backup_operations()
+
+    # Queue should be empty after drain
+    assert len(extension._backup_operation_queue) == 0

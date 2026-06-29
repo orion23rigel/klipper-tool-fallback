@@ -25,21 +25,21 @@ REASON_CODES = frozenset((
 
 @dataclass
 class SensorRuntime:
-    name: object
-    sensor: object = None
+    name: str | None
+    sensor: object | None = None
     authority: str = "unknown"
-    enabled: object = None
-    detected: object = None
-    confirmed_detected: object = None
-    debounce_target: object = None
+    enabled: bool | None = None
+    detected: bool | None = None
+    confirmed_detected: bool | None = None
+    debounce_target: bool | None = None
     debounce_generation: int = 0
-    debounce_deadline: object = None
-    debounce_timer: object = None
-    debounce_origin: object = None
+    debounce_deadline: float | None = None
+    debounce_timer: object | None = None
+    debounce_origin: str | None = None
     outage_acknowledged: bool = False
     outage_pause_suppressed: bool = False
     outage_pause_pending: bool = False
-    poll_timer: object = None
+    poll_timer: object | None = None
 
 
 @dataclass(frozen=True)
