@@ -853,3 +853,86 @@ def test_undefined_tool_detection_logs_via_respond_info(
     info_responses = [r for r in printer.gcode.responses if "T99" in r]
     assert len(info_responses) >= 1
     assert "not configured" in info_responses[0].lower() or "T99" in info_responses[0]
+
+
+def test_define_tool_backup_missing_logical_during_prompt(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    """WR-01 fix: LOGICAL parameter is validated during undefined-tool prompts."""
+    path = tmp_path / "state.json"
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer, path)
+    printer.send_event("klippy:ready")
+
+    # Set up an undefined-tool prompt checkpoint
+    extension._workflow_checkpoint = tool_fallback.WorkflowCheckpoint(
+        source="undefined_tool",
+        stage="waiting_for_user",
+        generation=1,
+        logical_tool="T99",
+        current_physical_tool="T0",
+        requested_physical_tool=None,
+        pause_owned=False,
+    )
+    extension._undefined_tool_pending = "T99"
+
+    # Call DEFINE_TOOL_BACKUP without LOGICAL parameter
+    gcmd = FakeGCmd({"BACKUP": "T1"})
+    with pytest.raises(CommandError):
+        extension.cmd_DEFINE_TOOL_BACKUP(gcmd)
+
+
+def test_define_tool_backup_invalid_logical_during_prompt(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    """WR-01 fix: LOGICAL is validated against TOOL_NAME_RE during undefined-tool prompts."""
+    path = tmp_path / "state.json"
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer, path)
+    printer.send_event("klippy:ready")
+
+    extension._workflow_checkpoint = tool_fallback.WorkflowCheckpoint(
+        source="undefined_tool",
+        stage="waiting_for_user",
+        generation=1,
+        logical_tool="T99",
+        current_physical_tool="T0",
+        requested_physical_tool=None,
+        pause_owned=False,
+    )
+    extension._undefined_tool_pending = "T99"
+
+    # Call with invalid tool name format
+    gcmd = FakeGCmd({"LOGICAL": "invalid", "BACKUP": "T1"})
+    with pytest.raises(CommandError):
+        extension.cmd_DEFINE_TOOL_BACKUP(gcmd)
+
+
+def test_undefined_tool_timeout_selects_lowest_numbered_tool(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    """WR-03 fix: timeout fallback picks lowest-numbered tool, not first-registered."""
+    path = tmp_path / "state.json"
+    # Register T5 first, then T0 — T0 has the lowest number
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, path,
+        tools=(("T5", ("T0",)), ("T0", ("T5",))))
+    printer.send_event("klippy:ready")
+
+    # Set up an undefined-tool prompt with T99
+    extension._workflow_checkpoint = tool_fallback.WorkflowCheckpoint(
+        source="undefined_tool",
+        stage="waiting_for_user",
+        generation=1,
+        logical_tool="T99",
+        current_physical_tool="T5",
+        requested_physical_tool=None,
+        pause_owned=False,
+    )
+    extension._undefined_tool_pending = "T99"
+
+    # Clear responses
+    printer.gcode.responses.clear()
+
+    # Trigger timeout — should pick T0 (lowest number), not T5 (first registered)
+    extension._handle_undefined_tool_timeout("T99")
+
+    # Verify the fallback mapped to T0, not T5
+    assert extension.state.user_defined_backups.get("T99") == "T0"

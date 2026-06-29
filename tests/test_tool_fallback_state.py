@@ -653,3 +653,19 @@ def test_with_user_defined_backup_returns_immutable_view():
     assert type(candidate.user_defined_backups) is MappingProxyType
     with pytest.raises(TypeError):
         candidate.user_defined_backups["T0"] = "T2"
+
+
+def test_with_user_defined_backup_rejects_none_logical():
+    """WR-02 fix: with_user_defined_backup validates the logical parameter type."""
+    state = FallbackState.from_dict(valid_dict())
+
+    with pytest.raises(state_module.StateValidationError, match="logical"):
+        state.with_user_defined_backup(None, "T1")
+
+
+def test_with_user_defined_backup_rejects_invalid_logical_name():
+    """WR-02 fix: with_user_defined_backup validates logical matches TOOL_NAME_RE."""
+    state = FallbackState.from_dict(valid_dict())
+
+    with pytest.raises(state_module.StateValidationError, match="logical"):
+        state.with_user_defined_backup("invalid", "T1")

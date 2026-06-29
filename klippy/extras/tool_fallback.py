@@ -358,6 +358,11 @@ class ToolFallback:
             and checkpoint.source == "undefined_tool")
         if is_undefined_prompt:
             logical_tool = gcmd.get("LOGICAL")
+            if logical_tool is None:
+                raise gcmd.error("LOGICAL parameter is required")
+            if not tool_fallback_config.TOOL_NAME_RE.fullmatch(logical_tool):
+                raise gcmd.error(
+                    "LOGICAL must be a canonical tool name (e.g. T0, T1)")
         else:
             logical_tool = self._require_configured_tool(gcmd, "LOGICAL")
         backup_tool = self._require_configured_tool(gcmd, "BACKUP")
@@ -1149,7 +1154,7 @@ class ToolFallback:
         Per D-20: displays a timeout message.
         """
         # Find the first configured tool (lowest number) per D-17
-        default_tool = next(iter(self.config.tools))
+        default_tool = min(self.config.tools, key=lambda t: int(t[1:]))
 
         # Per D-18: define the mapping automatically
         self.state = self.state.with_user_defined_backup(undefined_tool, default_tool)

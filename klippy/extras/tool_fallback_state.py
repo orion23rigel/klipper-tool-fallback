@@ -311,6 +311,12 @@ class FallbackState:
         )
 
     def with_user_defined_backup(self, logical, backup):
+        if type(logical) is not str:
+            raise StateValidationError(
+                "user_defined_backup logical must be a canonical tool name")
+        if not TOOL_NAME_RE.fullmatch(logical):
+            raise StateValidationError(
+                "user_defined_backup logical must be a canonical tool name")
         if backup is not None:
             if backup not in self.tools:
                 raise StateValidationError(
