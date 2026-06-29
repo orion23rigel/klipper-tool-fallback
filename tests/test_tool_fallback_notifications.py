@@ -220,7 +220,7 @@ def test_finalized_notification_state_is_runtime_only(
     persisted = extension.state.to_dict()
     assert "notification" not in persisted
     assert "finalized_events" not in persisted
-    assert persisted["version"] == 1
+    assert persisted["version"] == 2
 
 
 def test_heating_timeout_is_nonterminal_until_guarded_finalization(

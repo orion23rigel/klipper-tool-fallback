@@ -22,28 +22,32 @@ def configured(*entries):
 
 def valid_dict():
     return {
-        "version": 1,
+        "version": 2,
         "tools": {
             "T0": {
                 "loaded": True,
                 "purged": True,
                 "failed": False,
                 "backups": ["T2", "T1"],
+                "user_defined_backup": None,
             },
             "T1": {
                 "loaded": False,
                 "purged": False,
                 "failed": True,
                 "backups": [],
+                "user_defined_backup": None,
             },
             "T2": {
                 "loaded": True,
                 "purged": False,
                 "failed": False,
                 "backups": ["T1"],
+                "user_defined_backup": None,
             },
         },
         "mappings": {"T0": "T2", "T1": "T1", "T2": "T2"},
+        "user_defined_backups": {},
     }
 
 
@@ -233,7 +237,7 @@ def test_with_all_backups_returns_one_complete_canonical_immutable_candidate():
         for name, tool in state.tools.items()
     }
     assert candidate.mappings == state.mappings
-    assert candidate.version == 1
+    assert candidate.version == 2
     with pytest.raises(TypeError):
         candidate.tools["T0"] = state.tools["T0"]
 
@@ -299,7 +303,7 @@ def test_filament_and_purge_candidates_have_exact_field_semantics(
     assert candidate.tools["T1"] is state.tools["T1"]
     assert candidate.tools["T2"] is state.tools["T2"]
     assert candidate.mappings == state.mappings
-    assert candidate.to_dict()["version"] == 1
+    assert candidate.to_dict()["version"] == 2
     assert state.tools["T0"].purged is True
 
 
@@ -393,7 +397,7 @@ def test_with_identity_mapping_rejects_unknown_logical_route():
 
 
 @pytest.mark.parametrize("mutate", [
-    lambda value: value.update(version=2),
+    lambda value: value.update(version=3),
     lambda value: value.update(version=True),
     lambda value: value.update(extra={}),
     lambda value: value["tools"]["T0"].update(loaded=1),
@@ -553,3 +557,20 @@ def test_parent_directory_unsupported_fsync_is_tolerated(tmp_path, monkeypatch):
 
     assert StateStore(str(path)).save(state) is True
     assert path.exists()
+
+
+def test_tool_state_has_user_defined_backup_defaulting_to_none():
+    state = FallbackState.from_config(configured(("T0", ("T1",))))
+
+    assert state.tools["T0"].user_defined_backup is None
+
+
+def test_tool_state_preserves_user_defined_backup_through_mutations():
+    decoded = valid_dict()
+    decoded["tools"]["T0"]["user_defined_backup"] = "T1"
+    state = FallbackState.from_dict(decoded)
+
+    candidate = state.with_filament_loaded("T0")
+
+    assert candidate.tools["T0"].user_defined_backup == "T1"
+    assert state.tools["T0"].user_defined_backup == "T1"

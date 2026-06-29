@@ -189,7 +189,7 @@ def test_status_interfaces_are_deterministic_complete_and_read_only(
     command(post_ready)
 
     assert expected["initialized"] is True
-    assert expected["version"] == 1
+    assert expected["version"] == 2
     assert expected["tools"] == extension.get_state().to_dict()["tools"]
     assert expected["mappings"] == extension.get_state().to_dict()["mappings"]
     assert expected["configuration"]["purge_gcode"] == "_TOOL_FALLBACK_PURGE"

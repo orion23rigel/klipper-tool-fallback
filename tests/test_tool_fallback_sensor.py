@@ -156,6 +156,7 @@ def test_unknown_sensor_status_preserves_durable_filament_history(
         "purged": True,
         "failed": False,
         "backups": [],
+        "user_defined_backup": None,
     }
     assert status["sensor_authority"]["T0"]["authority"] == "unknown"
     assert status["sensor_authority"]["T0"]["enabled"] is None

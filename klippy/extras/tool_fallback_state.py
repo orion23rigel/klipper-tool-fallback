@@ -8,7 +8,7 @@ from types import MappingProxyType
 from .tool_fallback_config import TOOL_NAME_RE
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class StateValidationError(ValueError):
@@ -21,6 +21,7 @@ class ToolState:
     purged: bool
     failed: bool
     backups: tuple
+    user_defined_backup: str | None = None
 
 
 @dataclass(frozen=True)
@@ -28,33 +29,69 @@ class FallbackState:
     version: int
     tools: object
     mappings: object
+    user_defined_backups: object
 
     @classmethod
     def from_config(cls, tools):
         tool_states = {
-            name: ToolState(False, False, False, tuple(tool.backups))
+            name: ToolState(False, False, False, tuple(tool.backups), None)
             for name, tool in tools.items()
         }
         mappings = {name: name for name in tools}
-        return cls._canonical(tool_states, mappings)
+        return cls._canonical(
+            tool_states, mappings, MappingProxyType({}))
 
     @classmethod
     def from_dict(cls, value):
         data = _require_dict(value, "state")
-        _require_fields(data, {"version", "tools", "mappings"}, "state")
+        for required in ("version", "tools", "mappings"):
+            if required not in data:
+                raise StateValidationError(
+                    "state missing required field: %s" % (required,))
+        allowed_fields = {"version", "tools", "mappings", "user_defined_backups"}
+        unknown = set(data) - allowed_fields
+        if unknown:
+            raise StateValidationError(
+                "state has invalid fields: unknown %s" %
+                (", ".join(sorted(unknown)),))
         version = data["version"]
-        if type(version) is not int or version != SCHEMA_VERSION:
+        if type(version) is not int or version not in (1, 2):
             raise StateValidationError(
                 "Unsupported state schema version: %r" % (version,))
+
+        is_v2 = version == 2 or "user_defined_backups" in data
+
+        if is_v2:
+            raw_user_defined_backups = data.get("user_defined_backups", {})
+            if type(raw_user_defined_backups) is not dict:
+                raise StateValidationError(
+                    "user_defined_backups must be an object")
+            user_defined_backups = {}
+            for logical, backup in raw_user_defined_backups.items():
+                _require_tool_name(logical, "user_defined_backup")
+                if backup is not None:
+                    if type(backup) is not str or not TOOL_NAME_RE.fullmatch(
+                            backup):
+                        raise StateValidationError(
+                            "user_defined_backup %s must be a canonical "
+                            "tool name or null" % (logical,))
+                    if logical == backup:
+                        raise StateValidationError(
+                            "user_defined_backup %s cannot reference itself" %
+                            (logical,))
+                user_defined_backups[logical] = backup
+        else:
+            user_defined_backups = {}
 
         raw_tools = _require_dict(data["tools"], "tools")
         tool_states = {}
         for name, raw_tool in raw_tools.items():
             _require_tool_name(name, "tool")
             tool = _require_dict(raw_tool, "tool %s" % (name,))
-            _require_fields(
-                tool, {"loaded", "purged", "failed", "backups"},
-                "tool %s" % (name,))
+            for required in ("loaded", "purged", "failed", "backups"):
+                if required not in tool:
+                    raise StateValidationError(
+                        "tool %s missing required field: %s" % (name, required))
             backups = _require_tool_list(
                 tool["backups"], "tool %s backups" % (name,))
             if name in backups:
@@ -72,7 +109,14 @@ class FallbackState:
             if purged and not loaded:
                 raise StateValidationError(
                     "Tool %s cannot be purged while unloaded" % (name,))
-            tool_states[name] = ToolState(loaded, purged, failed, backups)
+            user_defined_backup = tool.get("user_defined_backup", None)
+            if user_defined_backup is not None:
+                if type(user_defined_backup) is not str or not TOOL_NAME_RE.fullmatch(user_defined_backup):
+                    raise StateValidationError(
+                        "tool %s user_defined_backup must be a canonical "
+                        "tool name or null" % (name,))
+            tool_states[name] = ToolState(
+                loaded, purged, failed, backups, user_defined_backup)
 
         raw_mappings = _require_dict(data["mappings"], "mappings")
         mappings = {}
@@ -83,16 +127,22 @@ class FallbackState:
 
         names = set(tool_states)
         _require_exact_references(mappings, tool_states, names)
-        return cls._canonical(tool_states, mappings)
+        return cls._canonical(
+            tool_states, mappings, MappingProxyType(user_defined_backups))
 
     @classmethod
-    def _canonical(cls, tools, mappings):
+    def _canonical(cls, tools, mappings, user_defined_backups):
         ordered_tools = dict(sorted(tools.items(), key=_tool_sort_key))
         ordered_mappings = dict(sorted(mappings.items(), key=_tool_sort_key))
+        if type(user_defined_backups) is MappingProxyType:
+            user_defined_backups = dict(user_defined_backups)
+        user_defined_backups = MappingProxyType(
+            dict(sorted(user_defined_backups.items(), key=_tool_sort_key)))
         return cls(
             SCHEMA_VERSION,
             MappingProxyType(ordered_tools),
             MappingProxyType(ordered_mappings),
+            user_defined_backups,
         )
 
     def to_dict(self):
@@ -104,10 +154,12 @@ class FallbackState:
                     "purged": tool.purged,
                     "failed": tool.failed,
                     "backups": list(tool.backups),
+                    "user_defined_backup": tool.user_defined_backup,
                 }
                 for name, tool in self.tools.items()
             },
             "mappings": dict(self.mappings),
+            "user_defined_backups": dict(self.user_defined_backups),
         }
 
     def reconcile(self, configured_tools):
@@ -116,7 +168,7 @@ class FallbackState:
         for name, config in configured_tools.items():
             if name not in self.tools:
                 tool_states[name] = ToolState(
-                    False, False, False, tuple(config.backups))
+                    False, False, False, tuple(config.backups), None)
                 continue
             existing = self.tools[name]
             tool_states[name] = ToolState(
@@ -126,13 +178,20 @@ class FallbackState:
                 tuple(
                     backup for backup in existing.backups
                     if backup in configured_names),
+                existing.user_defined_backup,
             )
 
         mappings = {}
         for name in configured_tools:
             target = self.mappings.get(name, name)
             mappings[name] = target if target in configured_names else name
-        return self._canonical(tool_states, mappings)
+        filtered_backups = {
+            logical: backup
+            for logical, backup in self.user_defined_backups.items()
+            if logical in configured_names
+        }
+        return self._canonical(
+            tool_states, mappings, MappingProxyType(filtered_backups))
 
     def with_mapping(self, logical, physical):
         if logical not in self.tools:
@@ -145,7 +204,8 @@ class FallbackState:
             return self
         mappings = dict(self.mappings)
         mappings[logical] = physical
-        return self._canonical(self.tools, mappings)
+        return self._canonical(
+            self.tools, mappings, self.user_defined_backups)
 
     def with_identity_mapping(self, logical):
         return self.with_mapping(logical, logical)
@@ -155,7 +215,8 @@ class FallbackState:
                for logical, physical in self.mappings.items()):
             return self
         mappings = {name: name for name in self.tools}
-        return self._canonical(self.tools, mappings)
+        return self._canonical(
+            self.tools, mappings, self.user_defined_backups)
 
     def with_backups(self, physical, ordered_backups):
         current = self._require_tool(physical)
@@ -163,7 +224,8 @@ class FallbackState:
         return self._replace_tool(
             physical,
             ToolState(
-                current.loaded, current.purged, current.failed, backups),
+                current.loaded, current.purged, current.failed, backups,
+                current.user_defined_backup),
         )
 
     def with_all_backups(self, backups_by_tool):
@@ -188,16 +250,19 @@ class FallbackState:
                 current.purged,
                 current.failed,
                 normalized[physical],
+                current.user_defined_backup,
             )
             for physical, current in self.tools.items()
         }
-        return self._canonical(tools, self.mappings)
+        return self._canonical(
+            tools, self.mappings, self.user_defined_backups)
 
     def with_filament_loaded(self, physical):
         current = self._require_tool(physical)
         return self._replace_tool(
             physical,
-            ToolState(True, False, False, current.backups),
+            ToolState(True, False, False, current.backups,
+                      current.user_defined_backup),
         )
 
     def with_reconciled_filament_loaded(self, physical):
@@ -205,21 +270,24 @@ class FallbackState:
         return self._replace_tool(
             physical,
             ToolState(True, current.purged if current.loaded else False,
-                      False, current.backups),
+                      False, current.backups,
+                      current.user_defined_backup),
         )
 
     def with_filament_unloaded(self, physical):
         current = self._require_tool(physical)
         return self._replace_tool(
             physical,
-            ToolState(False, False, current.failed, current.backups),
+            ToolState(False, False, current.failed, current.backups,
+                      current.user_defined_backup),
         )
 
     def with_failed_runout(self, physical):
         current = self._require_tool(physical)
         return self._replace_tool(
             physical,
-            ToolState(False, False, True, current.backups),
+            ToolState(False, False, True, current.backups,
+                      current.user_defined_backup),
         )
 
     def with_tool_purged(self, physical):
@@ -230,21 +298,36 @@ class FallbackState:
                 (physical,))
         return self._replace_tool(
             physical,
-            ToolState(True, True, current.failed, current.backups),
+            ToolState(True, True, current.failed, current.backups,
+                      current.user_defined_backup),
         )
 
     def with_tool_unpurged(self, physical):
         current = self._require_tool(physical)
         return self._replace_tool(
             physical,
-            ToolState(current.loaded, False, current.failed, current.backups),
+            ToolState(current.loaded, False, current.failed, current.backups,
+                      current.user_defined_backup),
         )
 
     def _require_tool(self, physical):
         if physical not in self.tools:
             raise StateValidationError(
-                "Physical state references unknown tool %s" % (physical,))
+                "Physical tool references unknown tool %s" % (physical,))
         return self.tools[physical]
+
+    def _validate_user_defined_backups(self):
+        configured_names = set(self.tools)
+        for logical, backup in self.user_defined_backups.items():
+            if backup is not None:
+                if logical == backup:
+                    raise StateValidationError(
+                        "user_defined_backup %s cannot reference itself" %
+                        (logical,))
+                if backup not in configured_names:
+                    raise StateValidationError(
+                        "user_defined_backup %s references unknown tool %s" %
+                        (logical, backup))
 
     def _validate_backups(self, physical, ordered_backups):
         self._require_tool(physical)
@@ -283,7 +366,8 @@ class FallbackState:
             return self
         tools = dict(self.tools)
         tools[physical] = replacement
-        return self._canonical(tools, self.mappings)
+        return self._canonical(
+            tools, self.mappings, self.user_defined_backups)
 
 
 class StateStore:
@@ -312,6 +396,7 @@ class StateStore:
     def save(self, state):
         if state == self._persisted_state:
             return False
+        state._validate_user_defined_backups()
         serialized = json.dumps(
             state.to_dict(),
             ensure_ascii=True,
