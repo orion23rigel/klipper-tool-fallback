@@ -1,5 +1,20 @@
 # Milestones
 
+## v1.2 Non-existent Tool Fallback Definition (Shipped: 2026-06-29)
+
+**Phases completed:** 5 phases, 9 plans, 7 tasks
+
+**Key accomplishments:**
+
+- Schema version bumped to 2 with backward-compatible user_defined_backup fields on ToolState and FallbackState, implicit v1→v2 migration in from_dict(), and validation in save() and reconcile()
+- _TOOL_FALLBACK_TN wrapper G-code command with T parameter validation, configured-tool routing delegation, and undefined-tool detection via WorkflowCheckpoint
+- 1. [Rule 2 - Missing Critical Functionality] Allow DEFINE_TOOL_BACKUP during waiting_for_user stage
+- 1. [Rule 3 - Blocking Issue] Synchronous flow changes test structure
+- JWT auth with refresh rotation using jose library
+- get_status() already exposes user_defined_backups via to_dict(); 5 new tests verify visibility, empty state, undefinition, JSON serialization, and Phase 10 logging.
+
+---
+
 ## v1.0 MVP (Shipped: 2026-06-11)
 
 **Phases completed:** 4 phases, 12 plans, 18 tasks
