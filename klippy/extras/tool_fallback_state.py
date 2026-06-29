@@ -310,6 +310,30 @@ class FallbackState:
                       current.user_defined_backup),
         )
 
+    def with_user_defined_backup(self, logical, backup):
+        if logical not in self.tools:
+            raise StateValidationError(
+                "Logical route references unknown tool %s" % (logical,))
+        if backup is not None:
+            if backup not in self.tools:
+                raise StateValidationError(
+                    "user_defined_backup %s references unknown tool %s" %
+                    (logical, backup))
+            if logical == backup:
+                raise StateValidationError(
+                    "user_defined_backup %s cannot reference itself" %
+                    (logical,))
+        current = self.user_defined_backups.get(logical)
+        if current == backup:
+            return self
+        new_udd = dict(self.user_defined_backups)
+        if backup is None:
+            new_udd.pop(logical, None)
+        else:
+            new_udd[logical] = backup
+        return self._canonical(
+            self.tools, self.mappings, new_udd)
+
     def _require_tool(self, physical):
         if physical not in self.tools:
             raise StateValidationError(
