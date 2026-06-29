@@ -1187,3 +1187,290 @@ def test_fallback_resume_failure_preserves_visible_blocked_checkpoint(
     assert len(notification_scripts(printer)) == 1
     assert "EVENT=FALLBACK_FAILURE" in notification_scripts(printer)[0]
     assert "REASON_CODE=RESUME_FAILED" in notification_scripts(printer)[0]
+
+
+# --- User-defined backup priority tests (Phase 12) ---
+
+
+def _load_fallback_config_with_udd(config_factory, prefix_config_factory, printer,
+                                   state_path, tool_states, udd_backups=None,
+                                   sensors=True, heater_names=None):
+    """Helper to load extension with user-defined backups."""
+    state_dict = {
+        "version": 2,
+        "tools": tool_states,
+        "mappings": {name: name for name in tool_states},
+    }
+    if udd_backups is not None:
+        state_dict["user_defined_backups"] = udd_backups
+    StateStore(str(state_path)).save(FallbackState.from_dict(state_dict))
+    extension = tool_fallback.load_config(
+        config_factory(state_path=str(state_path)))
+    printer.add_object("tool_fallback", extension)
+    for name in tool_states:
+        printer.gcode.register_command(name, lambda gcmd: None)
+        options = {
+            "heater": (heater_names or {}).get(name, "extruder"),
+        }
+        if sensors:
+            sensor_name = "filament_switch_sensor %s_sensor" % name.lower()
+            sensor = FakeFilamentSensor(
+                enabled=True,
+                filament_detected=tool_states[name].get("loaded", True),
+            )
+            printer.add_object(sensor_name, sensor)
+            options["filament_sensor"] = sensor_name
+        tool_fallback.load_config_prefix(
+            prefix_config_factory("tool_fallback %s" % name, **options))
+    printer.send_event("klippy:ready")
+    if sensors:
+        printer.reactor.advance(1.0)
+    return extension
+
+
+def test_user_defined_backup_tried_before_configured(config_factory,
+                                                      prefix_config_factory,
+                                                      printer, tmp_path):
+    """User-defined backup T2 is tried first, before configured backup T1."""
+    t2_heater = FakeHeater("extruder2", target=0.0, ready=True,
+                           events=printer.heaters.events)
+    t1_heater = FakeHeater("extruder1", target=0.0, ready=True,
+                           events=printer.heaters.events)
+    printer.heaters.add_heater(t2_heater)
+    printer.heaters.add_heater(t1_heater)
+
+    tool_states = {
+        "T0": tool_state(loaded=True, purged=True, backups=("T1",)),
+        "T1": tool_state(loaded=True, purged=True),
+        "T2": tool_state(loaded=True, purged=True),
+    }
+    extension = _load_fallback_config_with_udd(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json", tool_states,
+        udd_backups={"T0": "T2"},
+        heater_names={"T0": "extruder", "T1": "extruder1", "T2": "extruder2"})
+
+    printer.heaters.heaters["extruder"].target = 220.0
+
+    extension._selected_physical_tool = "T0"
+    extension._active_logical_tool = "T0"
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    sensor_t0 = printer.objects["filament_switch_sensor t0_sensor"]
+    sensor_t0.filament_detected = False
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+    printer.reactor.advance(1.0)
+
+    # T2 (user-defined) should be selected, not T1 (configured)
+    assert extension._selected_physical_tool == "T2"
+    assert extension._active_logical_tool == "T0"
+    assert extension.state.tools["T0"].failed is True
+    assert "EVENT=FALLBACK_SUCCESS" in notification_scripts(printer)[0]
+
+
+def test_user_defined_backup_fails_then_configured_used(config_factory,
+                                                         prefix_config_factory,
+                                                         printer, tmp_path):
+    """When user-defined backup T2 is failed, configured backup T1 is tried."""
+    t1_heater = FakeHeater("extruder1", target=0.0, ready=True,
+                           events=printer.heaters.events)
+    printer.heaters.add_heater(t1_heater)
+
+    tool_states = {
+        "T0": tool_state(loaded=True, purged=True, backups=("T1",)),
+        "T1": tool_state(loaded=True, purged=True),
+        "T2": tool_state(loaded=True, purged=True, failed=True),
+    }
+    extension = _load_fallback_config_with_udd(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json", tool_states,
+        udd_backups={"T0": "T2"},
+        heater_names={"T0": "extruder", "T1": "extruder1"})
+
+    printer.heaters.heaters["extruder"].target = 220.0
+
+    extension._selected_physical_tool = "T0"
+    extension._active_logical_tool = "T0"
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    sensor_t0 = printer.objects["filament_switch_sensor t0_sensor"]
+    sensor_t0.filament_detected = False
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+    printer.reactor.advance(1.0)
+
+    # T1 (configured) should be selected since T2 is failed
+    assert extension._selected_physical_tool == "T1"
+    assert extension._active_logical_tool == "T0"
+    assert "EVENT=FALLBACK_SUCCESS" in notification_scripts(printer)[0]
+
+
+def test_user_defined_backup_unloaded_then_configured_used(config_factory,
+                                                            prefix_config_factory,
+                                                            printer, tmp_path):
+    """When user-defined backup T2 is unloaded, configured backup T1 is tried."""
+    t1_heater = FakeHeater("extruder1", target=0.0, ready=True,
+                           events=printer.heaters.events)
+    printer.heaters.add_heater(t1_heater)
+
+    tool_states = {
+        "T0": tool_state(loaded=True, purged=True, backups=("T1",)),
+        "T1": tool_state(loaded=True, purged=True),
+        "T2": tool_state(loaded=False, purged=True),
+    }
+    extension = _load_fallback_config_with_udd(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json", tool_states,
+        udd_backups={"T0": "T2"},
+        heater_names={"T0": "extruder", "T1": "extruder1"})
+
+    printer.heaters.heaters["extruder"].target = 220.0
+
+    extension._selected_physical_tool = "T0"
+    extension._active_logical_tool = "T0"
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    sensor_t0 = printer.objects["filament_switch_sensor t0_sensor"]
+    sensor_t0.filament_detected = False
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+    printer.reactor.advance(1.0)
+
+    # T1 (configured) should be selected since T2 is unloaded
+    assert extension._selected_physical_tool == "T1"
+    assert extension._active_logical_tool == "T0"
+    assert "EVENT=FALLBACK_SUCCESS" in notification_scripts(printer)[0]
+
+
+def test_user_defined_backup_complete_fallback_workflow(config_factory,
+                                                         prefix_config_factory,
+                                                         printer, tmp_path):
+    """Full end-to-end: runout → user-defined backup selected → preheat →
+    select → purge → persist → resume."""
+    t2_heater = FakeHeater("extruder2", target=0.0, ready=True,
+                           events=printer.heaters.events)
+    printer.heaters.add_heater(t2_heater)
+
+    tool_states = {
+        "T0": tool_state(loaded=True, purged=True, backups=("T1",)),
+        "T1": tool_state(loaded=True, purged=True),
+        "T2": tool_state(loaded=True, purged=True),
+    }
+    extension = _load_fallback_config_with_udd(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json", tool_states,
+        udd_backups={"T0": "T2"},
+        heater_names={"T0": "extruder", "T2": "extruder2"})
+
+    printer.heaters.heaters["extruder"].target = 220.0
+
+    extension._selected_physical_tool = "T0"
+    extension._active_logical_tool = "T0"
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    sensor_t0 = printer.objects["filament_switch_sensor t0_sensor"]
+    sensor_t0.filament_detected = False
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+    printer.reactor.advance(1.0)
+
+    # Verify complete workflow succeeded with user-defined backup
+    assert extension._workflow_checkpoint is None
+    assert control_scripts(printer) == ["PAUSE", "RESUME"]
+    assert "EVENT=FALLBACK_SUCCESS" in notification_scripts(printer)[0]
+    assert extension.state.tools["T0"].failed is True
+    assert extension.state.tools["T0"].loaded is False
+    assert extension.state.tools["T2"].loaded is True
+    assert extension._selected_physical_tool == "T2"
+    assert extension._active_logical_tool == "T0"
+
+
+def test_user_defined_backup_respects_fail_closed_unknown_authority(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    """User-defined backup T2 with unknown sensor authority is skipped,
+    configured backup T1 (known authority) is selected."""
+    t1_heater = FakeHeater("extruder1", target=0.0, ready=True,
+                           events=printer.heaters.events)
+    printer.heaters.add_heater(t1_heater)
+
+    tool_states = {
+        "T0": tool_state(loaded=True, purged=True, backups=("T1",)),
+        "T1": tool_state(loaded=True, purged=True),
+        "T2": tool_state(loaded=True, purged=True),
+    }
+    extension = _load_fallback_config_with_udd(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json", tool_states,
+        udd_backups={"T0": "T2"},
+        heater_names={"T0": "extruder", "T1": "extruder1"})
+
+    # Make T2 have unknown sensor authority
+    extension._sensor_runtime["T2"] = type(
+        "SensorRuntime", (), {"authority": "unknown"})()
+
+    printer.heaters.heaters["extruder"].target = 220.0
+
+    extension._selected_physical_tool = "T0"
+    extension._active_logical_tool = "T0"
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    sensor_t0 = printer.objects["filament_switch_sensor t0_sensor"]
+    sensor_t0.filament_detected = False
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+    printer.reactor.advance(1.0)
+
+    # T1 should be selected since T2 has unknown authority
+    assert extension._selected_physical_tool == "T1"
+    assert extension._active_logical_tool == "T0"
+    assert "EVENT=FALLBACK_SUCCESS" in notification_scripts(printer)[0]
+
+
+def test_no_user_defined_backup_unchanged_behavior(config_factory,
+                                                    prefix_config_factory,
+                                                    printer, tmp_path):
+    """Without user-defined backup, behavior is identical to pre-phase-12:
+    configured backup T1 is selected."""
+    t1_heater = FakeHeater("extruder1", target=0.0, ready=True,
+                           events=printer.heaters.events)
+    printer.heaters.add_heater(t1_heater)
+
+    tool_states = {
+        "T0": tool_state(loaded=True, purged=True, backups=("T1",)),
+        "T1": tool_state(loaded=True, purged=True),
+    }
+    extension = _load_fallback_config_with_udd(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json", tool_states,
+        udd_backups={},
+        heater_names={"T0": "extruder", "T1": "extruder1"})
+
+    printer.heaters.heaters["extruder"].target = 220.0
+
+    extension._selected_physical_tool = "T0"
+    extension._active_logical_tool = "T0"
+    printer.add_object("print_stats", FakePrintStats("printing"))
+
+    sensor_t0 = printer.objects["filament_switch_sensor t0_sensor"]
+    sensor_t0.filament_detected = False
+
+    printer.gcode.invoke_command(
+        "TOOL_FALLBACK_RUNOUT",
+        FakeGCmd({"TOOL": "T0", "PAUSE_OWNED": "1"}))
+    printer.reactor.advance(1.0)
+
+    # T1 (configured) should be selected
+    assert extension._selected_physical_tool == "T1"
+    assert extension._active_logical_tool == "T0"
+    assert "EVENT=FALLBACK_SUCCESS" in notification_scripts(printer)[0]
