@@ -32,12 +32,12 @@
 
 ### User Prompt Flow
 
-- [ ] **PROMPT-01**: When an undefined tool is detected, the print is paused using the existing `pause_gcode` mechanism
-- [ ] **PROMPT-02**: A console message prompts the user: "Tool Tn not defined. Define a backup tool: `DEFINE_TOOL_BACKUP Tn Tm`"
-- [ ] **PROMPT-03**: The system waits for the user to submit `DEFINE_TOOL_BACKUP`
-- [ ] **PROMPT-04**: If the user defines a backup, the mapping is applied and the print resumes via the existing `resume_gcode` mechanism
-- [ ] **PROMPT-05**: If the user does not respond within a configurable timeout (`undefined_tool_timeout`), the system falls back to a default tool (or the first configured backup) and resumes
-- [ ] **PROMPT-06**: The timeout event is logged via the existing notification system
+- [x] **PROMPT-01**: When an undefined tool is detected, the print is paused using the existing `pause_gcode` mechanism
+- [x] **PROMPT-02**: A console message prompts the user: "Tool Tn not defined. Define a backup tool: `DEFINE_TOOL_BACKUP Tn Tm`"
+- [x] **PROMPT-03**: The system waits for the user to submit `DEFINE_TOOL_BACKUP`
+- [x] **PROMPT-04**: If the user defines a backup, the mapping is applied and the print resumes via the existing `resume_gcode` mechanism
+- [x] **PROMPT-05**: If the user does not respond within a configurable timeout (`undefined_tool_timeout`), the system falls back to a default tool (or the first configured backup) and resumes
+- [x] **PROMPT-06**: The timeout event is logged via the existing notification system
 
 ### Fallback Application
 
@@ -81,12 +81,12 @@
 | DETECT-02 | Phase 10 | Pending |
 | DETECT-03 | Phase 10 | Pending |
 | DETECT-04 | Phase 10 | Pending |
-| PROMPT-01 | Phase 11 | Pending |
-| PROMPT-02 | Phase 11 | Pending |
-| PROMPT-03 | Phase 11 | Pending |
-| PROMPT-04 | Phase 11 | Pending |
-| PROMPT-05 | Phase 11 | Pending |
-| PROMPT-06 | Phase 11 | Pending |
+| PROMPT-01 | Phase 11 | Complete |
+| PROMPT-02 | Phase 11 | Complete |
+| PROMPT-03 | Phase 11 | Complete |
+| PROMPT-04 | Phase 11 | Complete |
+| PROMPT-05 | Phase 11 | Complete |
+| PROMPT-06 | Phase 11 | Complete |
 | FALLBACK-01 | Phase 12 | Pending |
 | FALLBACK-02 | Phase 12 | Pending |
 | FALLBACK-03 | Phase 12 | Pending |
@@ -95,6 +95,7 @@
 | OBSERVE-02 | Phase 12 | Pending |
 
 **Coverage:**
+
 - v1.2 requirements: 28 total
 - Mapped to phases: 28
 - Unmapped: 0 ✓

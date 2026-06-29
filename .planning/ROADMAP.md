@@ -162,6 +162,7 @@ See [v1.0 roadmap](milestones/v1.0-ROADMAP.md) and
 **Plans**: 3/3 plans complete
 
 Plans:
+
 - [x] 09-01-PLAN.md — Add `with_user_defined_backup()` mutation method to FallbackState
 - [x] 09-02-PLAN.md — Implement DEFINE_TOOL_BACKUP and UNDEFINE_TOOL_BACKUP commands
 - [x] 09-03-PLAN.md — Implement SHOW_TOOL_BACKUPS command
@@ -183,6 +184,7 @@ Plans:
 **Plans**: 1/1 plans complete | **Status**: Complete
 
 Plans:
+
 - [x] 10-01-PLAN.md — Implement `_TOOL_FALLBACK_TN` wrapper command with validation, routing delegation, and undefined-tool trigger
 
 **UI hint**: yes
@@ -204,6 +206,7 @@ Plans:
 **Plans**: 2/2 plans complete
 
 Plans:
+
 - [x] 11-01-PLAN.md — Add undefined_tool_timeout config field and implement _handle_undefined_tool_prompt (pause, prompt, wait loop, resume)
 - [x] 11-02-PLAN.md — Add comprehensive test coverage for user prompt flow
 
@@ -231,7 +234,7 @@ Plans:
 | 8. State Schema Extension | 4 | 1/1 | Complete    | 2026-06-29 |
 | 9. User Commands | 8 | 3/3 | Complete | - |
 | 10. Undefined Tool Detection | 4 | 1/1 | Complete | - |
-| 11. User Prompt Flow | 6 | 2/2 | Planned | - |
+| 11. User Prompt Flow | 6 | 2/2 | Complete   | 2026-06-29 |
 | 12. Fallback Integration And Observability | 6 | 0/TBD | Not started | - |
 
 ## Requirement Coverage
