@@ -441,3 +441,90 @@ def test_show_tool_backups_with_none_backup(
     gcmd2 = invoke(printer, "SHOW_TOOL_BACKUPS")
 
     assert "(none)" in gcmd2.responses[0]
+
+
+# --- _TOOL_FALLBACK_TN tests ---
+
+
+def test_tool_fallback_tn_is_registered(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    assert "_TOOL_FALLBACK_TN" in set(printer.gcode.commands)
+
+
+def test_tool_fallback_tn_missing_t_parameter(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    with pytest.raises(CommandError, match="requires a T parameter"):
+        invoke(printer, "_TOOL_FALLBACK_TN")
+
+
+def test_tool_fallback_tn_invalid_format(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    with pytest.raises(CommandError, match="must be in format Tn"):
+        invoke(printer, "_TOOL_FALLBACK_TN", T="invalid")
+
+
+def test_tool_fallback_tn_configured_tool_delegates(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    path = tmp_path / "state.json"
+    extension = load_extension(
+        config_factory, prefix_config_factory, printer, path,
+        (("T0", ("T1",)), ("T1", ())))
+    printer.send_event("klippy:ready")
+    invoke(printer, "_TOOL_FALLBACK_TN", T="T0")
+
+    assert extension._active_logical_tool == "T0"
+    assert extension._selected_physical_tool == "T0"
+    assert any("configured" in r and "routing normally" in r
+               for r in printer.gcode.responses)
+
+
+def test_tool_fallback_tn_unconfigured_triggers_undefined_flow(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    printer.send_event("klippy:ready")
+    invoke(printer, "_TOOL_FALLBACK_TN", T="T99")
+
+    checkpoint = extension._workflow_checkpoint
+    assert checkpoint is not None
+    assert checkpoint.source == "undefined_tool"
+    assert checkpoint.stage == "tool_not_configured"
+    assert checkpoint.logical_tool == "T99"
+    assert any("not configured" in r for r in printer.gcode.responses)
+
+
+def test_tool_fallback_tn_unconfigured_does_not_pause(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    print_stats = FakePrintStats(state="printing")
+    printer.add_object("print_stats", print_stats)
+    printer.send_event("klippy:ready")
+
+    invoke(printer, "_TOOL_FALLBACK_TN", T="T99")
+
+    assert print_stats.state == "printing"
+    assert "PAUSE" not in printer.gcode.script_events
+
+
+def test_tool_fallback_tn_routing_not_initialized(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer,
+        tmp_path / "state.json")
+    # Do NOT send klippy:ready — config stays None
+    with pytest.raises(CommandError, match="not initialized"):
+        invoke(printer, "_TOOL_FALLBACK_TN", T="T0")
