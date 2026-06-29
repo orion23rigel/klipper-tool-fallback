@@ -1,5 +1,6 @@
 import json
 import os
+from types import MappingProxyType
 
 import pytest
 
@@ -574,3 +575,81 @@ def test_tool_state_preserves_user_defined_backup_through_mutations():
 
     assert candidate.tools["T0"].user_defined_backup == "T1"
     assert state.tools["T0"].user_defined_backup == "T1"
+
+
+# --- with_user_defined_backup tests ---
+
+
+def test_with_user_defined_backup_sets_mapping():
+    state = FallbackState.from_dict(valid_dict())
+
+    candidate = state.with_user_defined_backup("T0", "T1")
+
+    assert candidate is not state
+    assert candidate.user_defined_backups["T0"] == "T1"
+    assert state.user_defined_backups.get("T0") is None
+
+
+def test_with_user_defined_backup_removes_mapping():
+    decoded = valid_dict()
+    decoded["user_defined_backups"] = {"T0": "T1"}
+    state = FallbackState.from_dict(decoded)
+
+    candidate = state.with_user_defined_backup("T0", None)
+
+    assert candidate is not state
+    assert "T0" not in candidate.user_defined_backups
+    assert state.user_defined_backups["T0"] == "T1"
+
+
+def test_with_user_defined_backup_no_op_returns_self():
+    decoded = valid_dict()
+    decoded["user_defined_backups"] = {"T0": "T1"}
+    state = FallbackState.from_dict(decoded)
+
+    result = state.with_user_defined_backup("T0", "T1")
+
+    assert result is state
+
+
+def test_with_user_defined_backup_no_op_undefine_returns_self():
+    state = FallbackState.from_dict(valid_dict())
+
+    result = state.with_user_defined_backup("T0", None)
+
+    assert result is state
+
+
+def test_with_user_defined_backup_rejects_self_reference():
+    state = FallbackState.from_dict(valid_dict())
+
+    with pytest.raises(StateValidationError, match="cannot reference itself"):
+        state.with_user_defined_backup("T0", "T0")
+
+
+def test_with_user_defined_backup_rejects_unknown_tool():
+    state = FallbackState.from_dict(valid_dict())
+
+    with pytest.raises(StateValidationError, match="unknown tool T99"):
+        state.with_user_defined_backup("T0", "T99")
+
+
+def test_with_user_defined_backup_preserves_other_mappings():
+    decoded = valid_dict()
+    decoded["user_defined_backups"] = {"T1": "T2"}
+    state = FallbackState.from_dict(decoded)
+
+    candidate = state.with_user_defined_backup("T0", "T1")
+
+    assert candidate.user_defined_backups["T0"] == "T1"
+    assert candidate.user_defined_backups["T1"] == "T2"
+
+
+def test_with_user_defined_backup_returns_immutable_view():
+    state = FallbackState.from_dict(valid_dict())
+
+    candidate = state.with_user_defined_backup("T0", "T1")
+
+    assert type(candidate.user_defined_backups) is MappingProxyType
+    with pytest.raises(TypeError):
+        candidate.user_defined_backups["T0"] = "T2"
