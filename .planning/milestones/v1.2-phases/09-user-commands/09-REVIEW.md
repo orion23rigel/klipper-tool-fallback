@@ -10,10 +10,11 @@ files_reviewed_list:
   - tests/test_tool_fallback_extension.py
 findings:
   critical: 0
-  warning: 3
+  warning: 0
   info: 2
-  total: 5
-status: issues_found
+  total: 2
+  resolved: 3
+status: clean
 ---
 
 # Phase 09: Code Review Report
@@ -31,49 +32,28 @@ Phase 9 implements three G-code commands (`DEFINE_TOOL_BACKUP`, `UNDEFINE_TOOL_B
 
 No structural findings were provided in the prompt. The codebase is consistent across modules — imports, exports, and naming patterns align.
 
-## Warnings
+## Resolved Warnings
 
-### WR-01: `cmd_DEFINE_TOOL_BACKUP` accepts an unconfigured `LOGICAL` parameter without tool-name validation during undefined-tool prompts
+### WR-01: `cmd_DEFINE_TOOL_BACKUP` accepts an unconfigured `LOGICAL` parameter without tool-name validation during undefined-tool prompts — **FIXED**
 
 **File:** `klippy/extras/tool_fallback.py:360`
 **Issue:** When `is_undefined_prompt` is true, the code reads `logical_tool = gcmd.get("LOGICAL")` without validating that the value is a non-empty string matching `TOOL_NAME_RE`. The `_require_configured_tool` check is skipped, but `state.with_user_defined_backup(logical_tool, backup_tool)` is still called. If `gcmd.get("LOGICAL")` returns `None` (parameter missing), the call proceeds with `logical_tool = None`, which will either fail silently or produce a malformed state entry. The `with_user_defined_backup` method does not validate the `logical` key — it only validates the `backup` value.
 
-**Fix:** Add a validation guard after the `is_undefined_prompt` branch:
-```python
-if is_undefined_prompt:
-    logical_tool = gcmd.get("LOGICAL")
-    if logical_tool is None:
-        raise gcmd.error("LOGICAL parameter is required")
-    if not tool_fallback_config.TOOL_NAME_RE.fullmatch(logical_tool):
-        raise gcmd.error("LOGICAL must be a canonical tool name")
-else:
-    logical_tool = self._require_configured_tool(gcmd, "LOGICAL")
-```
+**Fix applied:** Added validation guard after the `is_undefined_prompt` branch that checks `LOGICAL` is non-empty and matches `TOOL_NAME_RE`.
 
-### WR-02: `with_user_defined_backup` does not validate the `logical` parameter type
+### WR-02: `with_user_defined_backup` does not validate the `logical` parameter type — **FIXED**
 
 **File:** `klippy/extras/tool_fallback_state.py:313-332`
 **Issue:** The method signature is `with_user_defined_backup(self, logical, backup)`. It validates `backup` (checking it's in `self.tools` and not self-referential), but it never validates that `logical` is a string or a valid tool name. If called with `logical=None` (as WR-01 can pass), the method will silently create an entry `None: "T1"` in `user_defined_backups`. Later, `_validate_user_defined_backups()` (line 340-351) also skips type-checking on the logical key — it only checks `backup is not None` and `backup not in configured_names`. This means a `None` key can persist in the state dictionary.
 
-**Fix:** Add validation at the start of `with_user_defined_backup`:
-```python
-def with_user_defined_backup(self, logical, backup):
-    if type(logical) is not str:
-        raise StateValidationError(
-            "user_defined_backup logical must be a canonical tool name")
-    if backup is not None:
-        ...
-```
+**Fix applied:** Added type and regex validation at the start of `with_user_defined_backup` that rejects `None` and non-matching logical values.
 
-### WR-03: `_handle_undefined_tool_timeout` uses `iter()` on dict — iteration order is not guaranteed to be "lowest number"
+### WR-03: `_handle_undefined_tool_timeout` uses `iter()` on dict — iteration order is not guaranteed to be "lowest number" — **FIXED**
 
 **File:** `klippy/extras/tool_fallback.py:1152`
 **Issue:** The timeout fallback selects `default_tool = next(iter(self.config.tools))`. While Python 3.7+ guarantees insertion-order preservation for dicts, `self.config.tools` is a dict whose insertion order depends on how tools were registered (via `register_tool()` calls). The comment says "first configured tool (lowest number)" per D-17, but there is no guarantee that the first-registered tool is the lowest-numbered one. If tools are registered out of numeric order (e.g., T5 before T0), the fallback will pick T5 instead of T0.
 
-**Fix:** Sort the tools by numeric suffix to guarantee the lowest-numbered tool is selected:
-```python
-default_tool = min(self.config.tools, key=lambda t: int(t[1:]))
-```
+**Fix applied:** Replaced `next(iter(self.config.tools))` with `min(self.config.tools, key=lambda t: int(t[1:]))` to guarantee lowest-numbered tool selection regardless of registration order.
 
 ## Info
 
