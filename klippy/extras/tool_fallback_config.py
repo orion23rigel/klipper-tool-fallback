@@ -19,6 +19,7 @@ class GlobalConfig:
     selection_timeout: float
     heating_timeout: float
     purge_timeout: float
+    undefined_tool_timeout: float
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,8 @@ def parse_global_config(config):
             config, "heating_timeout", 300.0),
         purge_timeout=_positive_finite_float(
             config, "purge_timeout", 180.0),
+        undefined_tool_timeout=_positive_finite_float(
+            config, "undefined_tool_timeout", 300.0),
     )
 
 
