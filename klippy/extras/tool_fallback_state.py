@@ -311,9 +311,6 @@ class FallbackState:
         )
 
     def with_user_defined_backup(self, logical, backup):
-        if logical not in self.tools:
-            raise StateValidationError(
-                "Logical route references unknown tool %s" % (logical,))
         if backup is not None:
             if backup not in self.tools:
                 raise StateValidationError(

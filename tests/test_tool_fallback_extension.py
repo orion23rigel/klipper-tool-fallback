@@ -494,18 +494,25 @@ def test_tool_fallback_tn_unconfigured_triggers_undefined_flow(
     extension = _load_backup_extension(
         config_factory, prefix_config_factory, printer,
         tmp_path / "state.json")
+    print_stats = FakePrintStats(state="printing")
+    printer.add_object("print_stats", print_stats)
     printer.send_event("klippy:ready")
+
     invoke(printer, "_TOOL_FALLBACK_TN", T="T99")
 
-    checkpoint = extension._workflow_checkpoint
-    assert checkpoint is not None
-    assert checkpoint.source == "undefined_tool"
-    assert checkpoint.stage == "tool_not_configured"
-    assert checkpoint.logical_tool == "T99"
-    assert any("not configured" in r for r in printer.gcode.responses)
+    # Prompt flow pauses, displays prompt, enters waiting loop.
+    # With a 300-second timeout and no user response, the flow times out,
+    # falls back to the first configured tool, and resumes.
+    assert print_stats.state == "printing"
+    assert any("T99 not defined" in r for r in printer.gcode.responses)
+    assert any("timed out" in r and "falling back" in r
+               for r in printer.gcode.responses)
+    assert "RESUME" in printer.gcode.script_events
+    assert extension._undefined_tool_pending is None
+    assert extension._workflow_checkpoint is None
 
 
-def test_tool_fallback_tn_unconfigured_does_not_pause(
+def test_tool_fallback_tn_unconfigured_pauses_and_resumes_after_timeout(
         config_factory, prefix_config_factory, printer, tmp_path):
     extension = _load_backup_extension(
         config_factory, prefix_config_factory, printer,
@@ -516,8 +523,13 @@ def test_tool_fallback_tn_unconfigured_does_not_pause(
 
     invoke(printer, "_TOOL_FALLBACK_TN", T="T99")
 
+    # Prompt flow pauses, then times out and resumes.
     assert print_stats.state == "printing"
-    assert "PAUSE" not in printer.gcode.script_events
+    assert "PAUSE" in printer.gcode.script_events
+    assert "RESUME" in printer.gcode.script_events
+    assert any("T99 not defined" in r for r in printer.gcode.responses)
+    assert any("timed out" in r and "falling back" in r
+               for r in printer.gcode.responses)
 
 
 def test_tool_fallback_tn_routing_not_initialized(

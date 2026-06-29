@@ -14,6 +14,7 @@ SENSOR_POLL_INTERVAL = 0.25
 NOTIFICATION_DETAIL_LIMIT = 160
 NOTIFICATION_EVENTS = frozenset((
     "FALLBACK_SUCCESS", "FALLBACK_FAILURE", "TRANSIENT_RECOVERY",
+    "UNDEFINED_TOOL_SUCCESS", "UNDEFINED_TOOL_TIMEOUT",
 ))
 REASON_CODES = frozenset((
     "SUCCESS", "TRANSIENT_CLEARED", "GRAPH_EXHAUSTED", "PURGE_FAILED",
@@ -184,6 +185,10 @@ class ToolFallback:
             desc="Show canonical tool fallback state")
         # Re-entrancy guard for guarded resume handler
         self._resume_in_progress = False
+        # Sentinel flag set when an undefined-tool prompt is active.
+        # Cleared by cmd_DEFINE_TOOL_BACKUP when the user defines a backup
+        # for the pending tool. Also cleared on timeout or manual resume.
+        self._undefined_tool_pending = None
         self.gcode.register_command(
             "SELECT_PHYSICAL_TOOL", self.cmd_SELECT_PHYSICAL_TOOL,
             desc="Select a physical tool without changing logical mappings")
@@ -366,6 +371,10 @@ class ToolFallback:
                 (error,))
         gcmd.respond_info(
             "Tool %s user backup set to %s" % (logical_tool, backup_tool))
+        # Clear the undefined-tool sentinel if this backup definition
+        # resolves an active prompt (per D-12).
+        if self._undefined_tool_pending == logical_tool:
+            self._undefined_tool_pending = None
 
     def cmd_UNDEFINE_TOOL_BACKUP(self, gcmd):
         self._guard_notification_operation(gcmd.error)
@@ -542,7 +551,7 @@ class ToolFallback:
         if self.config is None or self._physical_handlers is None:
             raise gcmd.error("Tool fallback routing is not initialized")
 
-        raw_t = gcmd.get("T")
+        raw_t = gcmd.get("T", None)
         if raw_t is None:
             raise gcmd.error("_TOOL_FALLBACK_TN requires a T parameter")
 
@@ -562,6 +571,7 @@ class ToolFallback:
                 current_physical_tool=None,
                 pause_owned=False,
             )
+            self._handle_undefined_tool_prompt(gcmd)
             return
 
         self._route_logical(raw_t, gcmd)
@@ -1049,6 +1059,131 @@ class ToolFallback:
             return
         self._finalize_transient_outcome(checkpoint)
 
+    def _handle_undefined_tool_prompt(self, gcmd):
+        """Pause the print, display a prompt, wait for user input or timeout, then resume.
+
+        Called from cmd_TOOL_FALLBACK_TN when an undefined tool is detected.
+        Implements PROMPT-01 through PROMPT-06.
+        """
+        reactor = self.printer.get_reactor()
+        eventtime = reactor.monotonic()
+        undefined_tool = self._workflow_checkpoint.logical_tool
+
+        # PROMPT-01: Pause the print if active (per D-04, D-05)
+        if self._print_is_active():
+            try:
+                self.gcode.run_script_from_command(
+                    self.config.global_config.pause_gcode)
+            except Exception as error:
+                self._block_workflow(
+                    self._workflow_checkpoint,
+                    "Unable to pause print for undefined tool prompt: %s" % (error,))
+                return
+
+        # PROMPT-02: Display the prompt message (per D-07, D-08, D-09)
+        self.gcode.respond_info(
+            "Tool %s not defined. Define a backup tool: "
+            "`DEFINE_TOOL_BACKUP %s Tm`" % (undefined_tool, undefined_tool))
+
+        # Set the sentinel flag so cmd_DEFINE_TOOL_BACKUP knows a prompt is active
+        # (per D-12)
+        self._undefined_tool_pending = undefined_tool
+
+        # Advance checkpoint stage (per D-06)
+        self._workflow_checkpoint = replace(
+            self._workflow_checkpoint, stage="waiting_for_user")
+
+        # Compute timeout deadline (per D-01, D-03)
+        timeout_deadline = (
+            eventtime + self.config.global_config.undefined_tool_timeout)
+
+        # PROMPT-03: Wait loop — poll for user input or timeout (per D-10, D-12, D-13)
+        while True:
+            now = reactor.monotonic()
+
+            # Check if user defined a backup (sentinel flag cleared by cmd_DEFINE_TOOL_BACKUP)
+            if self._undefined_tool_pending is None:
+                break
+
+            # Check timeout (per D-03: per-event timeout)
+            if now >= timeout_deadline:
+                self._handle_undefined_tool_timeout(undefined_tool)
+                return
+
+            # Advance reactor so timer callbacks can fire
+            reactor.advance(0.1)
+
+        # PROMPT-04: Resume after user defined backup (per D-14, D-15)
+        self._undefined_tool_pending = None
+        completed = self._workflow_checkpoint
+        self._workflow_checkpoint = None
+
+        try:
+            self.gcode.run_script_from_command(
+                self.config.global_config.resume_gcode)
+        except Exception as error:
+            self._block_workflow(
+                completed,
+                "Resume after undefined tool backup failed: %s" % (error,),
+                "RESUME_FAILED")
+            return
+
+        self._finalize_undefined_tool_success(completed)
+
+    def _handle_undefined_tool_timeout(self, undefined_tool):
+        """Handle timeout: fall back to the first configured tool and resume.
+
+        Per D-17: the default tool is the first configured tool (lowest number).
+        Per D-18: automatically defines the mapping, persists, and resumes.
+        Per D-19: logs via the notification system.
+        Per D-20: displays a timeout message.
+        """
+        # Find the first configured tool (lowest number) per D-17
+        default_tool = next(iter(self.config.tools))
+
+        # Per D-18: define the mapping automatically
+        self.state = self.state.with_user_defined_backup(undefined_tool, default_tool)
+        try:
+            self._persist_state(self.state)
+        except OSError as error:
+            self._block_workflow(
+                self._workflow_checkpoint,
+                "Unable to persist timeout fallback mapping: %s" % (error,))
+            return
+
+        # Per D-20: display timeout message
+        self.gcode.respond_info(
+            "Tool %s prompt timed out; falling back to %s" %
+            (undefined_tool, default_tool))
+
+        # Clear sentinel and checkpoint (per D-12, D-16)
+        self._undefined_tool_pending = None
+        completed = self._workflow_checkpoint
+        self._workflow_checkpoint = None
+
+        # Per D-19: log timeout via notification system
+        self._attempt_notification(self._terminal_event(
+            completed, "UNDEFINED_TOOL_TIMEOUT", "TIMEOUT",
+            reason_detail=undefined_tool))
+
+        # Per D-14: resume the print
+        try:
+            self.gcode.run_script_from_command(
+                self.config.global_config.resume_gcode)
+        except Exception as error:
+            self._block_workflow(
+                completed,
+                "Resume after timeout fallback failed: %s" % (error,),
+                "RESUME_FAILED")
+            return
+
+        self._finalize_undefined_tool_success(completed)
+
+    def _finalize_undefined_tool_success(self, checkpoint):
+        self._attempt_notification(self._terminal_event(
+            checkpoint, "UNDEFINED_TOOL_SUCCESS", "SUCCESS"))
+        self._after_terminal_workflow()
+
     def _confirmed_runout(self, checkpoint):
         advanced = self._advance_workflow_checkpoint(
             checkpoint.generation, "debouncing", "confirmed_runout")
@@ -1415,6 +1550,10 @@ class ToolFallback:
     def _guard_workflow_operation(self, error_factory, operation):
         checkpoint = self._workflow_checkpoint
         if checkpoint is None:
+            return
+        # Allow DEFINE_TOOL_BACKUP during the waiting_for_user stage so the
+        # user can respond to an undefined-tool prompt.
+        if checkpoint.stage == "waiting_for_user" and operation == "tool backup definition":
             return
         raise error_factory(
             "Cannot perform %s while tool fallback workflow generation %s "
