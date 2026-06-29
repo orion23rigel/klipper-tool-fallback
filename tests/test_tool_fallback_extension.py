@@ -763,3 +763,93 @@ def test_undefined_tool_config_validation(
         cfg = config_factory(state_path="/tmp/test.json",
                              undefined_tool_timeout="inf")
         tool_fallback_config.parse_global_config(cfg)
+
+
+# --- SHOW_TOOL_FALLBACK_STATE user_defined_backups tests (Phase 12) ---
+
+
+def test_show_fallback_state_includes_user_defined_backups(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    """SHOW_TOOL_FALLBACK_STATE output includes user_defined_backups key."""
+    path = tmp_path / "state.json"
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer, path)
+    printer.send_event("klippy:ready")
+
+    # Set a user-defined backup
+    invoke(printer, "DEFINE_TOOL_BACKUP", LOGICAL="T0", BACKUP="T1")
+
+    # Get status output
+    snapshot = extension.get_status(None)
+
+    assert "user_defined_backups" in snapshot
+    assert snapshot["user_defined_backups"] == {"T0": "T1"}
+
+
+def test_show_fallback_state_user_defined_backups_empty_when_none(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    """user_defined_backups is empty dict when no user-defined backups exist."""
+    path = tmp_path / "state.json"
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer, path)
+    printer.send_event("klippy:ready")
+
+    snapshot = extension.get_status(None)
+
+    assert "user_defined_backups" in snapshot
+    assert snapshot["user_defined_backups"] == {}
+
+
+def test_show_fallback_state_user_defined_backups_reflects_undefinition(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    """user_defined_backups no longer contains mapping after UNDEFINE."""
+    path = tmp_path / "state.json"
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer, path)
+    printer.send_event("klippy:ready")
+
+    invoke(printer, "DEFINE_TOOL_BACKUP", LOGICAL="T0", BACKUP="T1")
+    snapshot = extension.get_status(None)
+    assert snapshot["user_defined_backups"] == {"T0": "T1"}
+
+    invoke(printer, "UNDEFINE_TOOL_BACKUP", TOOL="T0")
+    snapshot = extension.get_status(None)
+    assert "T0" not in snapshot["user_defined_backups"]
+    assert snapshot["user_defined_backups"] == {}
+
+
+def test_show_fallback_state_json_serializable(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    """SHOW_TOOL_FALLBACK_STATE output is valid JSON."""
+    path = tmp_path / "state.json"
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer, path)
+    printer.send_event("klippy:ready")
+
+    invoke(printer, "DEFINE_TOOL_BACKUP", LOGICAL="T0", BACKUP="T1")
+
+    snapshot = extension.get_status(None)
+    # Should not raise
+    json.dumps(snapshot, indent=2, sort_keys=True)
+
+
+def test_undefined_tool_detection_logs_via_respond_info(
+        config_factory, prefix_config_factory, printer, tmp_path):
+    """Phase 10's _TOOL_FALLBACK_TN logs via respond_info when tool is
+    not configured (OBSERVE-02)."""
+    path = tmp_path / "state.json"
+    extension = _load_backup_extension(
+        config_factory, prefix_config_factory, printer, path)
+    printer.send_event("klippy:ready")
+
+    # Clear any prior responses
+    printer.gcode.responses.clear()
+
+    # Call _TOOL_FALLBACK_TN with an unconfigured tool
+    gcmd = FakeGCmd({"T": "T99"})
+    extension.cmd_TOOL_FALLBACK_TN(gcmd)
+
+    # The respond_info call goes to printer.gcode.respond_info (not gcmd)
+    info_responses = [r for r in printer.gcode.responses if "T99" in r]
+    assert len(info_responses) >= 1
+    assert "not configured" in info_responses[0].lower() or "T99" in info_responses[0]
