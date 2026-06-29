@@ -14,21 +14,21 @@
 
 ### User Commands
 
-- [ ] **CMD-01**: User can define a backup tool mapping via `DEFINE_TOOL_BACKUP <logical_tool> <backup_tool>`
-- [ ] **CMD-02**: `DEFINE_TOOL_BACKUP` validates that the backup tool is configured (exists in `self.config.tools`)
-- [ ] **CMD-03**: `DEFINE_TOOL_BACKUP` rejects the command during an active workflow transition
-- [ ] **CMD-04**: `DEFINE_TOOL_BACKUP` persists the mapping immediately via `StateStore.save()`
-- [ ] **CMD-05**: User can remove a user-defined backup mapping via `UNDEFINE_TOOL_BACKUP <logical_tool>`
-- [ ] **CMD-06**: `UNDEFINE_TOOL_BACKUP` validates the mapping exists before removing
-- [ ] **CMD-07**: User can list all user-defined backup mappings via `SHOW_TOOL_BACKUPS`
-- [ ] **CMD-08**: `SHOW_TOOL_BACKUPS` displays both configured and user-defined backup mappings
+- [x] **CMD-01**: User can define a backup tool mapping via `DEFINE_TOOL_BACKUP <logical_tool> <backup_tool>`
+- [x] **CMD-02**: `DEFINE_TOOL_BACKUP` validates that the backup tool is configured (exists in `self.config.tools`)
+- [x] **CMD-03**: `DEFINE_TOOL_BACKUP` rejects the command during an active workflow transition
+- [x] **CMD-04**: `DEFINE_TOOL_BACKUP` persists the mapping immediately via `StateStore.save()`
+- [x] **CMD-05**: User can remove a user-defined backup mapping via `UNDEFINE_TOOL_BACKUP <logical_tool>`
+- [x] **CMD-06**: `UNDEFINE_TOOL_BACKUP` validates the mapping exists before removing
+- [x] **CMD-07**: User can list all user-defined backup mappings via `SHOW_TOOL_BACKUPS`
+- [x] **CMD-08**: `SHOW_TOOL_BACKUPS` displays both configured and user-defined backup mappings
 
 ### Undefined Tool Detection
 
-- [ ] **DETECT-01**: A wrapper G-code command `_TOOL_FALLBACK_TN` parses the tool number from G-code parameters
-- [ ] **DETECT-02**: `_TOOL_FALLBACK_TN` checks if the tool is configured in `self.config.tools`
-- [ ] **DETECT-03**: If the tool is configured, `_TOOL_FALLBACK_TN` delegates to existing routing (`_route_logical`)
-- [ ] **DETECT-04**: If the tool is NOT configured, `_TOOL_FALLBACK_TN` triggers the undefined-tool flow
+- [x] **DETECT-01**: A wrapper G-code command `_TOOL_FALLBACK_TN` parses the tool number from G-code parameters
+- [x] **DETECT-02**: `_TOOL_FALLBACK_TN` checks if the tool is configured in `self.config.tools`
+- [x] **DETECT-03**: If the tool is configured, `_TOOL_FALLBACK_TN` delegates to existing routing (`_route_logical`)
+- [x] **DETECT-04**: If the tool is NOT configured, `_TOOL_FALLBACK_TN` triggers the undefined-tool flow
 
 ### User Prompt Flow
 
@@ -41,15 +41,15 @@
 
 ### Fallback Application
 
-- [ ] **FALLBACK-01**: `resolve_backup_graph()` considers user-defined backups alongside configured backups
-- [ ] **FALLBACK-02**: User-defined backups are applied through the existing `_select_and_conditionally_purge()` path (no separate fast path)
-- [ ] **FALLBACK-03**: User-defined backup application respects all fail-closed safety checkpoints
-- [ ] **FALLBACK-04**: User-defined backup mappings are included in `state.mappings` after reconciliation
+- [x] **FALLBACK-01**: `resolve_backup_graph()` considers user-defined backups alongside configured backups
+- [x] **FALLBACK-02**: User-defined backups are applied through the existing `_select_and_conditionally_purge()` path (no separate fast path)
+- [x] **FALLBACK-03**: User-defined backup application respects all fail-closed safety checkpoints
+- [x] **FALLBACK-04**: User-defined backup mappings are included in `state.mappings` after reconciliation
 
 ### Observability
 
-- [ ] **OBSERVE-01**: `SHOW_TOOL_FALLBACK_STATE` includes user-defined backup mappings in its output
-- [ ] **OBSERVE-02**: Undefined tool detection events are logged to Klipper's log system
+- [x] **OBSERVE-01**: `SHOW_TOOL_FALLBACK_STATE` includes user-defined backup mappings in its output
+- [x] **OBSERVE-02**: Undefined tool detection events are logged to Klipper's log system
 
 ## Out of Scope
 
@@ -69,37 +69,38 @@
 | STATE-02 | Phase 8 | Complete |
 | STATE-03 | Phase 8 | Complete |
 | STATE-04 | Phase 8 | Complete |
-| CMD-01 | Phase 9 | Pending |
-| CMD-02 | Phase 9 | Pending |
-| CMD-03 | Phase 9 | Pending |
-| CMD-04 | Phase 9 | Pending |
-| CMD-05 | Phase 9 | Pending |
-| CMD-06 | Phase 9 | Pending |
-| CMD-07 | Phase 9 | Pending |
-| CMD-08 | Phase 9 | Pending |
-| DETECT-01 | Phase 10 | Pending |
-| DETECT-02 | Phase 10 | Pending |
-| DETECT-03 | Phase 10 | Pending |
-| DETECT-04 | Phase 10 | Pending |
+| CMD-01 | Phase 9 | Complete |
+| CMD-02 | Phase 9 | Complete |
+| CMD-03 | Phase 9 | Complete |
+| CMD-04 | Phase 9 | Complete |
+| CMD-05 | Phase 9 | Complete |
+| CMD-06 | Phase 9 | Complete |
+| CMD-07 | Phase 9 | Complete |
+| CMD-08 | Phase 9 | Complete |
+| DETECT-01 | Phase 10 | Complete |
+| DETECT-02 | Phase 10 | Complete |
+| DETECT-03 | Phase 10 | Complete |
+| DETECT-04 | Phase 10 | Complete |
 | PROMPT-01 | Phase 11 | Complete |
 | PROMPT-02 | Phase 11 | Complete |
 | PROMPT-03 | Phase 11 | Complete |
 | PROMPT-04 | Phase 11 | Complete |
 | PROMPT-05 | Phase 11 | Complete |
 | PROMPT-06 | Phase 11 | Complete |
-| FALLBACK-01 | Phase 12 | Pending |
-| FALLBACK-02 | Phase 12 | Pending |
-| FALLBACK-03 | Phase 12 | Pending |
-| FALLBACK-04 | Phase 12 | Pending |
-| OBSERVE-01 | Phase 12 | Pending |
-| OBSERVE-02 | Phase 12 | Pending |
+| FALLBACK-01 | Phase 12 | Complete |
+| FALLBACK-02 | Phase 12 | Complete |
+| FALLBACK-03 | Phase 12 | Complete |
+| FALLBACK-04 | Phase 12 | Complete |
+| OBSERVE-01 | Phase 12 | Complete |
+| OBSERVE-02 | Phase 12 | Complete |
 
 **Coverage:**
 
 - v1.2 requirements: 28 total
 - Mapped to phases: 28
 - Unmapped: 0 ✓
+- **Complete: 28/28**
 
 ---
 *Requirements defined: 2026-06-27*
-*Last updated: 2026-06-27 after initial definition*
+*Last updated: 2026-06-29 after v1.2 milestone completion*
