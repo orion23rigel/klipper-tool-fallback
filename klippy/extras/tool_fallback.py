@@ -19,7 +19,7 @@ NOTIFICATION_EVENTS = frozenset((
 REASON_CODES = frozenset((
     "SUCCESS", "TRANSIENT_CLEARED", "GRAPH_EXHAUSTED", "PURGE_FAILED",
     "HEATING_TIMEOUT", "MAPPING_PERSIST_FAILED", "RESUME_FAILED",
-    "UNEXPECTED_FAILURE",
+    "UNEXPECTED_FAILURE", "TIMEOUT",
 ))
 
 
@@ -349,7 +349,17 @@ class ToolFallback:
         self._guard_notification_operation(gcmd.error)
         self._guard_workflow_operation(
             gcmd.error, "tool backup definition")
-        logical_tool = self._require_configured_tool(gcmd, "LOGICAL")
+        # During an undefined-tool prompt, the LOGICAL parameter may refer
+        # to an unconfigured tool (the undefined tool itself).
+        checkpoint = self._workflow_checkpoint
+        is_undefined_prompt = (
+            checkpoint is not None
+            and checkpoint.stage == "waiting_for_user"
+            and checkpoint.source == "undefined_tool")
+        if is_undefined_prompt:
+            logical_tool = gcmd.get("LOGICAL")
+        else:
+            logical_tool = self._require_configured_tool(gcmd, "LOGICAL")
         backup_tool = self._require_configured_tool(gcmd, "BACKUP")
         if logical_tool == backup_tool:
             raise gcmd.error(
