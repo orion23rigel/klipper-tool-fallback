@@ -100,3 +100,4 @@
 | Milestone | Phases | Tests | Key Change |
 |-----------|--------|-------|------------|
 | v1.0 | 4 | 260 | Added independent cross-phase audit before archival |
+| v1.2 | 5 | 424 | TDD RED-GREEN cycle, wrapper command pattern, implicit schema migration |

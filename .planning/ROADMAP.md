@@ -36,6 +36,8 @@
 - [x] Phase 11: User Prompt Flow (2/2 plans) — completed 2026-06-29
 - [x] Phase 12: Fallback Integration And Observability (2/2 plans) — completed 2026-06-29
 
+For full details, see [milestones/v1.2-ROADMAP.md](milestones/v1.2-ROADMAP.md)
+
 </details>
 
 ## Progress
